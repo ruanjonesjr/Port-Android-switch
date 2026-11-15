@@ -1,0 +1,12 @@
+diff --git a/src/android/app/build.gradle.kts b/src/android/app/build.gradle.kts
+index cb026211c..34432ca17 100644
+--- a/src/android/app/build.gradle.kts
++++ b/src/android/app/build.gradle.kts
+@@ -170,6 +170,7 @@ android {
+                     "-DENABLE_QT=0", // Don't use QT
+                     "-DENABLE_SDL2=0", // Don't use SDL
+                     "-DENABLE_WEB_SERVICE=0", // Don't use telemetry
++                    "-DYUZU_TESTS=OFF", // Disable unnecessary tests on Android
+                     "-DBUNDLE_SPEEX=ON",
+                     "-DANDROID_ARM_NEON=true", // cryptopp requires Neon to work
+                     "-DYUZU_USE_BUNDLED_VCPKG=ON",
