@@ -1,0 +1,13 @@
+diff --git a/library/CMakeLists.txt b/library/CMakeLists.txt
+index f31820a2f8..3120fc65bb 100644
+--- a/library/CMakeLists.txt
++++ b/library/CMakeLists.txt
+@@ -118,7 +118,7 @@ if(CMAKE_COMPILER_IS_GNUCC)
+ endif(CMAKE_COMPILER_IS_GNUCC)
+ 
+ if(CMAKE_COMPILER_IS_CLANG)
+-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmissing-declarations -Wmissing-prototypes -Wdocumentation -Wno-documentation-deprecated-sync -Wunreachable-code")
++    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmissing-declarations -Wmissing-prototypes -Wdocumentation -Wno-documentation -Wno-documentation-deprecated-sync -Wunreachable-code")
+ endif(CMAKE_COMPILER_IS_CLANG)
+ 
+ if(WIN32)

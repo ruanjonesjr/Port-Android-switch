@@ -30,6 +30,10 @@ jobs:
         working-directory: yuzu-src
         run: git apply ../patches/yuzu-android-boost-process.patch
 
+      - name: Apply mbedTLS Android warning fix
+        working-directory: yuzu-src/externals/mbedtls
+        run: git apply ../../../patches/yuzu-android-mbedtls-doc.patch
+
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
