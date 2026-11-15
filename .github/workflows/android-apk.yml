@@ -61,6 +61,8 @@ jobs:
 
       - name: Build Yuzu Android
         working-directory: yuzu-src/src/android
+        env:
+          CFLAGS: "-Wno-documentation"
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon --stacktrace assemblemainlineRelease
