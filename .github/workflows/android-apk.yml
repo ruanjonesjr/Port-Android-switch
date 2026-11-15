@@ -26,6 +26,10 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Apply Yuzu Android compatibility patch
+        working-directory: yuzu-src
+        run: git apply ../patches/yuzu-android-boost-process.patch
+
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
