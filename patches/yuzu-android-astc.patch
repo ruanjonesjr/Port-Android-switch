@@ -1,0 +1,135 @@
+diff --git a/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/IntSetting.kt b/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/IntSetting.kt
+index 0165cb2d1..4d8c3cd91 100644
+--- a/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/IntSetting.kt
++++ b/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/IntSetting.kt
+@@ -14,6 +14,7 @@ enum class IntSetting(override val key: String) : AbstractIntSetting {
+     RENDERER_ACCURACY("gpu_accuracy"),
+     RENDERER_RESOLUTION("resolution_setup"),
+     RENDERER_VSYNC("use_vsync"),
++    RENDERER_ASTC("accelerate_astc"),
+     RENDERER_SCALING_FILTER("scaling_filter"),
+     RENDERER_ANTI_ALIASING("anti_aliasing"),
+     RENDERER_SCREEN_LAYOUT("screen_layout"),
+diff --git a/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/view/SettingsItem.kt b/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/view/SettingsItem.kt
+index 5fdf98318..7ad33f0e1 100644
+--- a/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/view/SettingsItem.kt
++++ b/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/view/SettingsItem.kt
+@@ -228,6 +228,14 @@ abstract class SettingsItem(
+                     valuesId = R.array.rendererVSyncValues
+                 )
+             )
++            put(
++                SingleChoiceSetting(
++                    IntSetting.RENDERER_ASTC,
++                    titleId = R.string.renderer_astc_decode_mode,
++                    choicesId = R.array.rendererAstcNames,
++                    valuesId = R.array.rendererAstcValues
++                )
++            )
+             put(
+                 SingleChoiceSetting(
+                     IntSetting.RENDERER_SCALING_FILTER,
+diff --git a/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/ui/SettingsFragmentPresenter.kt b/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/ui/SettingsFragmentPresenter.kt
+index 3ea5f5008..502147a5e 100644
+--- a/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/ui/SettingsFragmentPresenter.kt
++++ b/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/ui/SettingsFragmentPresenter.kt
+@@ -170,6 +170,7 @@ class SettingsFragmentPresenter(
+             add(IntSetting.RENDERER_ACCURACY.key)
+             add(IntSetting.RENDERER_RESOLUTION.key)
+             add(IntSetting.RENDERER_VSYNC.key)
++            add(IntSetting.RENDERER_ASTC.key)
+             add(IntSetting.RENDERER_SCALING_FILTER.key)
+             add(IntSetting.FSR_SHARPENING_SLIDER.key)
+             add(IntSetting.RENDERER_ANTI_ALIASING.key)
+diff --git a/src/android/app/src/main/jni/native_config.cpp b/src/android/app/src/main/jni/native_config.cpp
+index 0b26280c6..798901ca8 100644
+--- a/src/android/app/src/main/jni/native_config.cpp
++++ b/src/android/app/src/main/jni/native_config.cpp
+@@ -127,17 +127,44 @@ void Java_org_yuzu_yuzu_1emu_utils_NativeConfig_setShort(JNIEnv* env, jobject ob
+     setting->SetValue(value);
+ }
+ 
+-jint Java_org_yuzu_yuzu_1emu_utils_NativeConfig_getInt(JNIEnv* env, jobject obj, jstring jkey,
+-                                                       jboolean needGlobal) {
++jint Java_org_yuzu_yuzu_1emu_utils_NativeConfig_getInt(
++    JNIEnv* env, jobject obj, jstring jkey, jboolean needGlobal) {
++    const auto key = Common::Android::GetJString(env, jkey);
++
++    if (key == "accelerate_astc") {
++        auto setting = getSetting<Settings::AstcDecodeMode>(env, jkey);
++        if (setting == nullptr) {
++            return -1;
++        }
++        return static_cast<jint>(
++            setting->GetValue(static_cast<bool>(needGlobal)));
++    }
++
+     auto setting = getSetting<int>(env, jkey);
+     if (setting == nullptr) {
+         return -1;
+     }
+-    return setting->GetValue(needGlobal);
++    return setting->GetValue(static_cast<bool>(needGlobal));
+ }
+ 
+-void Java_org_yuzu_yuzu_1emu_utils_NativeConfig_setInt(JNIEnv* env, jobject obj, jstring jkey,
+-                                                       jint value) {
++void Java_org_yuzu_yuzu_1emu_utils_NativeConfig_setInt(
++    JNIEnv* env, jobject obj, jstring jkey, jint value) {
++    const auto key = Common::Android::GetJString(env, jkey);
++
++    if (key == "accelerate_astc") {
++        if (value < 0 || value > 2) {
++            LOG_ERROR(Frontend, "[Android Native] Invalid ASTC decode mode: {}", value);
++            return;
++        }
++
++        auto setting = getSetting<Settings::AstcDecodeMode>(env, jkey);
++        if (setting == nullptr) {
++            return;
++        }
++        setting->SetValue(static_cast<Settings::AstcDecodeMode>(value));
++        return;
++    }
++
+     auto setting = getSetting<int>(env, jkey);
+     if (setting == nullptr) {
+         return;
+diff --git a/src/android/app/src/main/res/values/arrays.xml b/src/android/app/src/main/res/values/arrays.xml
+index e10c915d6..1df5adf4d 100644
+--- a/src/android/app/src/main/res/values/arrays.xml
++++ b/src/android/app/src/main/res/values/arrays.xml
+@@ -119,6 +119,18 @@
+         <item>3</item>
+     </integer-array>
+ 
++    <string-array name="rendererAstcNames">
++        <item>@string/renderer_astc_cpu</item>
++        <item>@string/renderer_astc_gpu</item>
++        <item>@string/renderer_astc_cpu_async</item>
++    </string-array>
++
++    <integer-array name="rendererAstcValues">
++        <item>0</item>
++        <item>1</item>
++        <item>2</item>
++    </integer-array>
++
+     <string-array name="rendererScreenLayoutNames">
+         <item>@string/screen_layout_auto</item>
+         <item>@string/screen_layout_sensor_landscape</item>
+diff --git a/src/android/app/src/main/res/values/strings.xml b/src/android/app/src/main/res/values/strings.xml
+index 22702342e..5ae4f006d 100644
+--- a/src/android/app/src/main/res/values/strings.xml
++++ b/src/android/app/src/main/res/values/strings.xml
+@@ -224,6 +224,10 @@
+     <string name="renderer_accuracy">Accuracy level</string>
+     <string name="renderer_resolution">Resolution (Handheld/Docked)</string>
+     <string name="renderer_vsync">VSync mode</string>
++    <string name="renderer_astc_decode_mode">ASTC decoding mode</string>
++    <string name="renderer_astc_cpu">CPU</string>
++    <string name="renderer_astc_gpu">GPU</string>
++    <string name="renderer_astc_cpu_async">CPU asynchronous</string>
+     <string name="renderer_screen_layout">Orientation</string>
+     <string name="renderer_aspect_ratio">Aspect ratio</string>
+     <string name="renderer_scaling_filter">Window adapting filter</string>

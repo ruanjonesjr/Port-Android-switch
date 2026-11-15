@@ -38,6 +38,10 @@ jobs:
         working-directory: yuzu-src
         run: git apply ../patches/yuzu-android-resolution-025.patch
 
+      - name: Apply ASTC decoding mode
+        working-directory: yuzu-src
+        run: git apply ../patches/yuzu-android-astc.patch
+
       - name: Apply mbedTLS Android warning fix
         working-directory: yuzu-src/externals/mbedtls
         run: git apply ../../../patches/yuzu-android-mbedtls-doc.patch
