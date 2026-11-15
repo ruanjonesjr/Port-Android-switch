@@ -22,6 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: yuzu-revived/yuzu
+          ref: bebf5ba9415cefdb9ca2c6ca7cafd5aa483a542a
           path: yuzu-src
           submodules: recursive
           fetch-depth: 0
@@ -33,6 +34,9 @@ jobs:
       - name: Disable Yuzu tests for Android
         working-directory: yuzu-src
         run: git apply ../patches/yuzu-android-tests-off.patch
+      - name: Apply experimental 0.25x resolution
+        working-directory: yuzu-src
+        run: git apply ../patches/yuzu-android-resolution-025.patch
 
       - name: Apply mbedTLS Android warning fix
         working-directory: yuzu-src/externals/mbedtls
