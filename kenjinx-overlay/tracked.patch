@@ -1494,3 +1494,148 @@ index 66d4325..ae3ddce 100644
  
                  bool verified = false;
                  switch (fileName)
+diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/MainViewModel.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/MainViewModel.kt
+index 0f00144..aa6fcae 100644
+--- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/MainViewModel.kt
++++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/MainViewModel.kt
+@@ -97,6 +97,68 @@ class MainViewModel(val activity: MainActivity) {
+         return runCatching { RegionCode.valueOf(stored) }.getOrElse { RegionCode.USA }
+     }
+     // -------------------------------------------------------------------------------
++
++    private fun loadSelectedVulkanDriver(
++        driverViewModel: VulkanDriverViewModel,
++        drivers: List<DriverMetadata>
++    ): Long {
++        val metadata = drivers.find {
++            it.driverPath == driverViewModel.selected
++        } ?: return 0L
++
++        val sourceDriver = File(metadata.driverPath)
++        val sourceParent = sourceDriver.parentFile ?: return 0L
++        if (!sourceDriver.isFile) return 0L
++
++        val sourceFiles = sourceParent.walkTopDown()
++            .filter { it.isFile }
++            .toList()
++
++        val fingerprint = buildString {
++            append(sourceParent.canonicalPath).append('\n')
++            sourceFiles.sortedBy {
++                it.relativeTo(sourceParent).invariantSeparatorsPath
++            }.forEach { file ->
++                append(file.relativeTo(sourceParent).invariantSeparatorsPath)
++                append('|').append(file.length())
++                append('|').append(file.lastModified())
++                append('\n')
++            }
++        }
++
++        val privateDriverPath = File(activity.filesDir, "driver")
++        val marker = File(privateDriverPath, ".kenjinx-driver-cache")
++        val privateLibrary = File(privateDriverPath, metadata.libraryName)
++
++        val cacheValid = privateLibrary.isFile &&
++            marker.isFile &&
++            runCatching { marker.readText() == fingerprint }.getOrDefault(false)
++
++        if (!cacheValid) {
++            if (privateDriverPath.exists() &&
++                !privateDriverPath.deleteRecursively()
++            ) {
++                throw IllegalStateException("Não foi possível limpar a cópia antiga do driver.")
++            }
++
++            if (!privateDriverPath.mkdirs() && !privateDriverPath.isDirectory) {
++                throw IllegalStateException("Não foi possível criar a pasta privada do driver.")
++            }
++
++            sourceFiles.forEach { file ->
++                file.copyTo(File(privateDriverPath, file.name), overwrite = true)
++            }
++
++            marker.writeText(fingerprint)
++        }
++
++        return NativeHelpers.instance.loadDriver(
++            activity.applicationInfo.nativeLibraryDir!! + "/",
++            privateDriverPath.canonicalPath + "/",
++            metadata.libraryName
++        )
++    }
++
+     fun loadGame(game: GameModel, overrideSettings: Boolean? = false, forceNceAndPptc: Boolean? = false): Int {
+         KenjinxNative.deviceReinitEmulation()
+         MainActivity.mainViewModel?.activity?.uiHandler = UiHandler()
+@@ -138,34 +200,7 @@ class MainViewModel(val activity: MainActivity) {
+         val drivers = driverViewModel.getAvailableDrivers()
+         var driverHandle = 0L
+ 
+-        if(driverViewModel.selected.isNotEmpty()) {
+-            val metaData = drivers.find { it.driverPath == driverViewModel.selected }
+-
+-            metaData?.apply {
+-                val privatePath = activity.filesDir
+-                val privateDriverPath = privatePath.canonicalPath + "/driver/"
+-                val pD = File(privateDriverPath)
+-                if(pD.exists())
+-                    pD.deleteRecursively()
+-
+-                pD.mkdirs()
+-                val driver = File(driverViewModel.selected)
+-                val parent = driver.parentFile
+-                if(parent != null) {
+-                    for(file in parent.walkTopDown()) {
+-                        if(file.absolutePath == parent.absolutePath)
+-                            continue
+-                        file.copyTo(File(privateDriverPath + file.name), true)
+-                    }
+-                }
+-
+-                driverHandle = NativeHelpers.instance.loadDriver(
+-                    activity.applicationInfo.nativeLibraryDir!! + "/",
+-                    privateDriverPath,
+-                    this.libraryName
+-                )
+-            }
+-        }
++        driverHandle = loadSelectedVulkanDriver(driverViewModel, drivers)
+         val extensions = nativeInterop.VkRequiredExtensions
+ 
+         success = KenjinxNative.graphicsInitializeRenderer(
+@@ -240,34 +275,7 @@ class MainViewModel(val activity: MainActivity) {
+         val drivers = driverViewModel.getAvailableDrivers()
+         var driverHandle = 0L
+ 
+-        if(driverViewModel.selected.isNotEmpty()) {
+-            val metaData = drivers.find { it.driverPath == driverViewModel.selected }
+-
+-            metaData?.apply {
+-                val privatePath = activity.filesDir
+-                val privateDriverPath = privatePath.canonicalPath + "/driver/"
+-                val pD = File(privateDriverPath)
+-                if(pD.exists())
+-                    pD.deleteRecursively()
+-
+-                pD.mkdirs()
+-                val driver = File(driverViewModel.selected)
+-                val parent = driver.parentFile
+-                if(parent != null) {
+-                    for(file in parent.walkTopDown()) {
+-                        if(file.absolutePath == parent.absolutePath)
+-                            continue
+-                        file.copyTo(File(privateDriverPath + file.name), true)
+-                    }
+-                }
+-
+-                driverHandle = NativeHelpers.instance.loadDriver(
+-                    activity.applicationInfo.nativeLibraryDir!! + "/",
+-                    privateDriverPath,
+-                    this.libraryName
+-                )
+-            }
+-        }
++        driverHandle = loadSelectedVulkanDriver(driverViewModel, drivers)
+         val extensions = nativeInterop.VkRequiredExtensions
+ 
+         success = KenjinxNative.graphicsInitializeRenderer(
