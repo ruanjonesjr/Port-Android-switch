@@ -301,7 +301,7 @@ diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PhysicalCo
 index ba5626f..fe92720 100644
 --- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PhysicalControllerManager.kt
 +++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PhysicalControllerManager.kt
-@@ -1,243 +1,276 @@
+@@ -1,243 +1,278 @@
 -package org.kenjinx.android
 -
 -import android.util.Log
