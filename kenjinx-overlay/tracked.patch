@@ -1,0 +1,1494 @@
+diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/CrashHandler.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/CrashHandler.kt
+index 09e4b96..82a6cb2 100644
+--- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/CrashHandler.kt
++++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/CrashHandler.kt
+@@ -1,95 +1,100 @@
+ package org.kenjinx.android
+ 
+ import android.os.Build
++import android.os.Process
+ import java.io.File
+ import java.io.PrintWriter
+ import java.io.StringWriter
+ import java.text.SimpleDateFormat
+ import java.util.Date
+ import java.util.Locale
+-import java.lang.Thread.UncaughtExceptionHandler
+-
+-/**
+- * Handles uncaught exceptions in the application and logs them to a file
+- * Location: src/main/java/org/kenjinx/android/CrashHandler.kt
+- */
+-class CrashHandler : UncaughtExceptionHandler {
+-    private var crashLog: StringBuilder = StringBuilder()
+-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+-    
++import java.util.concurrent.atomic.AtomicBoolean
++import kotlin.system.exitProcess
++
++class CrashHandler : Thread.UncaughtExceptionHandler {
++
++    private val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
++    private val handlingCrash = AtomicBoolean(false)
++
+     companion object {
+         private const val LOG_FOLDER = "Logs"
+         private const val CRASH_LOG_FILE = "crash.log"
+-        private const val MAX_LOG_SIZE = 5 * 1024 * 1024 // 5MB
++        private const val MAX_LOG_SIZE = 5L * 1024L * 1024L
++        private const val MAX_REPORT_SIZE = 1024L * 1024L
+     }
+ 
+-    override fun uncaughtException(t: Thread, e: Throwable) {
++    override fun uncaughtException(thread: Thread, error: Throwable) {
++        if (!handlingCrash.compareAndSet(false, true)) {
++            delegate(thread, error)
++            return
++        }
++
+         try {
+-            generateCrashLog(t, e)
+-            saveCrashLog()
+-        } catch (writeError: Exception) {
+-            // If we can't write to the crash log, print to system log as fallback
+-            writeError.printStackTrace()
++            saveCrashReport(thread, error)
++        } catch (writeError: Throwable) {
++            android.util.Log.e(
++                "KenjinxCrash",
++                "Não foi possível salvar o relatório",
++                writeError
++            )
+         }
++
++        delegate(thread, error)
+     }
+ 
+-    private fun generateCrashLog(thread: Thread, throwable: Throwable) {
+-        crashLog.apply {
+-            append("\n=== Crash Report ===\n")
+-            append("Date: ${dateFormat.format(Date())}\n")
+-            
+-            // Device Information
+-            append("\n=== Device Info ===\n")
+-            append("Device: ${Build.MANUFACTURER} ${Build.MODEL}\n")
+-            append("Android Version: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})\n")
+-            append("Device Fingerprint: ${Build.FINGERPRINT}\n")
+-            
+-            // Thread Information
+-            append("\n=== Thread Info ===\n")
+-            append("Thread Name: ${thread.name}\n")
+-            append("Thread ID: ${thread.id}\n")
+-            append("Thread Priority: ${thread.priority}\n")
+-            append("Thread State: ${thread.state}\n")
+-            
+-            // Exception Details
+-            append("\n=== Exception Info ===\n")
+-            append("Exception Class: ${throwable.javaClass.name}\n")
+-            append("Exception Message: ${throwable.message}\n")
+-            
+-            // Stack Trace
+-            append("\n=== Stack Trace ===\n")
+-            val sw = StringWriter()
+-            throwable.printStackTrace(PrintWriter(sw))
+-            append(sw.toString())
+-            
+-            // Cause (if any)
+-            throwable.cause?.let { cause ->
+-                append("\n=== Cause ===\n")
+-                val causeSw = StringWriter()
+-                cause.printStackTrace(PrintWriter(causeSw))
+-                append(causeSw.toString())
+-            }
+-            
+-            append("\n=== End of Crash Report ===\n")
+-            append("----------------------------------------\n")
++    private fun saveCrashReport(thread: Thread, error: Throwable) {
++        val context = KenjinxApplication.instance
++        val directory = File(context.getPublicFilesDir(), LOG_FOLDER)
++
++        if (!directory.exists() && !directory.mkdirs()) {
++            throw IllegalStateException("Não foi possível criar a pasta de logs")
+         }
+-    }
+ 
+-    private fun saveCrashLog() {
+-        val logDir = File(MainActivity.AppPath, LOG_FOLDER).apply {
+-            if (!exists()) mkdirs()
++        val file = File(directory, CRASH_LOG_FILE)
++
++        val stack = StringWriter()
++        error.printStackTrace(PrintWriter(stack))
++
++        val report = buildString {
++            appendLine()
++            appendLine("========== KENJINX CRASH REPORT ==========")
++            appendLine("Date: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())}")
++            appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
++            appendLine("Android: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
++            appendLine("Fingerprint: ${Build.FINGERPRINT}")
++            appendLine("Thread: ${thread.name}")
++            appendLine("Thread ID: ${thread.id}")
++            appendLine("Exception: ${error.javaClass.name}")
++            appendLine("Message: ${error.message}")
++            appendLine()
++            appendLine(stack.toString().take(MAX_REPORT_SIZE.toInt()))
++            appendLine("========== END CRASH REPORT ==========")
++        }
++
++        synchronized(this) {
++            if (file.exists() && file.length() + report.length > MAX_LOG_SIZE) {
++                val backup = File(directory, "$CRASH_LOG_FILE.old")
++                if (backup.exists()) backup.delete()
++                file.renameTo(backup)
++            }
++
++            file.appendText(report)
+         }
+ 
+-        val crashLogFile = File(logDir, CRASH_LOG_FILE)
+-        
+-        // Rotate log if it's too large
+-        if (crashLogFile.exists() && crashLogFile.length() > MAX_LOG_SIZE) {
+-            val backupFile = File(logDir, "${CRASH_LOG_FILE}.old")
+-            if (backupFile.exists()) backupFile.delete()
+-            crashLogFile.renameTo(backupFile)
++        android.util.Log.e("KenjinxCrash", "Falha registrada em ${file.absolutePath}")
++    }
++
++    private fun delegate(thread: Thread, error: Throwable) {
++        try {
++            if (previousHandler != null && previousHandler !== this) {
++                previousHandler.uncaughtException(thread, error)
++                return
++            }
++        } catch (handlerError: Throwable) {
++            android.util.Log.e("KenjinxCrash", "Erro no handler original", handlerError)
+         }
+ 
+-        // Write the crash log
+-        crashLogFile.appendText(crashLog.toString())
++        Process.killProcess(Process.myPid())
++        exitProcess(10)
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/KenjinxApplication.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/KenjinxApplication.kt
+index b1cf7a3..0de0d6f 100644
+--- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/KenjinxApplication.kt
++++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/KenjinxApplication.kt
+@@ -3,18 +3,19 @@ package org.kenjinx.android
+ import android.app.Application
+ import android.content.Context
+ import java.io.File
+-import org.kenjinx.android.controllers.ControllerMatchingManager
++import org.kenjinx.android.controllers.ControllerMatchingManager
+ 
+ class KenjinxApplication : Application() {
+     init {
+         instance = this
+     }
+ 
+-    override fun onCreate() {
+-        super.onCreate()
+-        ControllerMatchingManager.initialize(applicationContext)
+-    }
+-
++    override fun onCreate() {
++        super.onCreate()
++        Thread.setDefaultUncaughtExceptionHandler(CrashHandler())
++        ControllerMatchingManager.initialize(applicationContext)
++    }
++
+     fun getPublicFilesDir(): File = getExternalFilesDir(null) ?: filesDir
+ 
+     companion object {
+diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/KenjinxNative.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/KenjinxNative.kt
+index bb22ab2..e461f4f 100644
+--- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/KenjinxNative.kt
++++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/KenjinxNative.kt
+@@ -55,6 +55,7 @@ interface KenjinxNativeJna : Library {
+     fun graphicsRendererRunLoop()
+     fun graphicsSetFullscreenStretch(enable: Boolean)
+     fun deviceReloadFilesystem()
++    fun deviceVerifyKeys(fileDescriptor: Int): Boolean
+     fun inputInitialize(width: Int, height: Int)
+     fun inputSetClientSize(width: Int, height: Int)
+     fun inputSetTouchPoint(x: Int, y: Int)
+@@ -82,7 +83,7 @@ interface KenjinxNativeJna : Library {
+     fun userCloseUser(userId: String)
+     fun loggingSetEnabled(logLevel: Int, enabled: Boolean)
+     fun deviceVerifyFirmware(fileDescriptor: Int, isXci: Boolean): String
+-    fun deviceInstallFirmware(fileDescriptor: Int, isXci: Boolean)
++    fun deviceInstallFirmware(fileDescriptor: Int, isXci: Boolean): Int
+     fun deviceGetInstalledFirmwareVersion(): String
+     fun uiHandlerSetup()
+     fun uiHandlerSetResponse(isOkPressed: Boolean, input: String)
+diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/MainActivity.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/MainActivity.kt
+index d8b8377..c2138a5 100644
+--- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/MainActivity.kt
++++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/MainActivity.kt
+@@ -1,5 +1,7 @@
+ package org.kenjinx.android
+ 
++import org.kenjinx.android.controllers.ControllerMappingCapture
++
+ import android.annotation.SuppressLint
+ import android.content.Intent
+ import android.content.pm.ActivityInfo
+@@ -67,13 +69,20 @@ class MainActivity: BaseActivity() {
+         override fun onDisplayAdded(displayId: Int) {}
+         override fun onDisplayRemoved(displayId: Int) {}
+         override fun onDisplayChanged(displayId: Int) {
+-            if(if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+-                    display?.displayId != displayId
+-                } else {
+-                    TODO("VERSION.SDK_INT < R")
+-                }
+-            ) return
+-            val rot = display?.rotation
++            @Suppress("DEPRECATION")
++            val currentDisplayId = if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
++                display?.displayId
++            } else {
++                windowManager.defaultDisplay.displayId
++            }
++            if(currentDisplayId != displayId) return
++
++            @Suppress("DEPRECATION")
++            val rot = if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
++                display?.rotation
++            } else {
++                windowManager.defaultDisplay.rotation
++            }
+             if(rot == lastKnownRotation) return
+ 
+             rotLog("onDisplayChanged: display.rotation=$rot → ${deg(rot)}°")
+@@ -217,7 +226,6 @@ class MainActivity: BaseActivity() {
+         super.onCreate(savedInstanceState)
+         Log.d("EhangTest", "MainActivity onCreate")
+         motionSensorManager = MotionSensorManager(this)
+-        Thread.setDefaultUncaughtExceptionHandler(crashHandler)
+ 
+         if(if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                 !Environment.isExternalStorageManager()
+@@ -291,6 +299,9 @@ class MainActivity: BaseActivity() {
+ 
+     @SuppressLint("RestrictedApi")
+     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
++        if(ControllerMappingCapture.handle(this, event)) {
++            return true
++        }
+         if(ControllerMatchingManager.handlePairingKey(event)) {
+             return true
+         }
+@@ -379,10 +390,11 @@ class MainActivity: BaseActivity() {
+     private fun applyOrientationPreference() {
+         val pref = QuickSettings(this).orientationPreference
+         requestedOrientation = pref.value
+-        val rot = if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
++        val rot = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+             this.display?.rotation
+         } else {
+-            TODO("VERSION.SDK_INT < R")
++            @Suppress("DEPRECATION")
++            windowManager.defaultDisplay.rotation
+         }
+         rotLog("applyOrientationPreference: rot=$rot → ${deg(rot)}°, pref=${pref.name}")
+         try {
+diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PhysicalControllerManager.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PhysicalControllerManager.kt
+index ba5626f..fe92720 100644
+--- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PhysicalControllerManager.kt
++++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PhysicalControllerManager.kt
+@@ -1,243 +1,276 @@
+-package org.kenjinx.android
+-
+-import android.util.Log
+-import android.view.InputDevice
+-import android.view.KeyEvent
+-import android.view.MotionEvent
+-import org.kenjinx.android.controllers.ControllerDeviceType
+-import org.kenjinx.android.controllers.ControllerMatchingManager
+-import org.kenjinx.android.controllers.ControllerMode
+-import org.kenjinx.android.controllers.ControllerRuntimeInfo
+-import org.kenjinx.android.viewmodels.QuickSettings
+-import kotlin.math.abs
+-
+-private val joyConSlKeyCode: Int? = KeyEvent.keyCodeFromString("KEYCODE_BUTTON_SL").takeIf { it != KeyEvent.KEYCODE_UNKNOWN }
+-private val joyConSrKeyCode: Int? = KeyEvent.keyCodeFromString("KEYCODE_BUTTON_SR").takeIf { it != KeyEvent.KEYCODE_UNKNOWN }
+-
+-private fun isJoyConSlKey(keyCode: Int): Boolean {
+-    if(keyCode == KeyEvent.KEYCODE_BUTTON_1) {
+-        return true
+-    }
+-    return joyConSlKeyCode?.let { keyCode == it } ?: false
+-}
+-
+-private fun isJoyConSrKey(keyCode: Int): Boolean {
+-    if(keyCode == KeyEvent.KEYCODE_BUTTON_2) {
+-        return true
+-    }
+-    return joyConSrKeyCode?.let { keyCode == it } ?: false
+-}
+-
+-class PhysicalControllerManager(val activity: MainActivity) {
+-
+-    fun onKeyEvent(event: KeyEvent): Boolean {
+-        Log.d("joycon", "resolveButtonId: $event")
+-
+-        val device = event.device ?: return false
+-        if(!device.isGamepad) return false
+-
+-        val runtime = ControllerMatchingManager.getRuntimeInfo(device.id) ?: return false
+-        val id = resolveButtonId(event.keyCode, runtime)
+-        if(id == GamePadButtonInputId.None) {
+-            return false
+-        }
+-
+-        val isNotFallback = (event.flags and KeyEvent.FLAG_FALLBACK) == 0
+-        if(!isNotFallback) {
+-            return true
+-        }
+-
+-        when(event.action) {
+-            KeyEvent.ACTION_UP -> KenjinxNative.inputSetButtonReleased(id.ordinal, runtime.controllerId)
+-            KeyEvent.ACTION_DOWN -> KenjinxNative.inputSetButtonPressed(id.ordinal, runtime.controllerId)
+-        }
+-        return true
+-    }
+-
+-    fun onMotionEvent(ev: MotionEvent) {
+-        if(ev.action != MotionEvent.ACTION_MOVE) {
+-            return
+-        }
+-        val device = ev.device ?: return
+-        if(!device.isGamepad) return
+-
+-        val runtime = ControllerMatchingManager.getRuntimeInfo(device.id) ?: return
+-        when(runtime.profile.mode) {
+-            ControllerMode.GenericMatched -> handleGenericMotion(ev, device, runtime.controllerId)
+-            ControllerMode.JoyConSingle -> handleJoyConSingleMotion(ev, device, runtime)
+-            ControllerMode.JoyConPairedPrimary -> handleJoyConPrimaryMotion(ev, device, runtime.controllerId)
+-            ControllerMode.JoyConPairedSecondary -> handleJoyConSecondaryMotion(ev, device, runtime.controllerId)
+-            ControllerMode.Unmatched -> {}
+-        }
+-    }
+-
+-    private fun resolveButtonId(keyCode: Int, runtime: ControllerRuntimeInfo): GamePadButtonInputId {
+-        val quickSettings = QuickSettings(activity)
+-        val base = mapGenericButton(keyCode, quickSettings)
+-        Log.d("joycon", "resolveButtonId: $keyCode → $base, mode:${runtime.profile.mode}")
+-        return when(runtime.profile.mode) {
+-            ControllerMode.JoyConSingle -> mapJoyConSingleButton(runtime.profile.type, keyCode, base)
+-            ControllerMode.JoyConPairedSecondary -> mapJoyConPairedSecondaryButton(keyCode, base, quickSettings)
+-            else -> base
+-        }
+-    }
+-
+-    private fun mapGenericButton(keycode: Int, quickSettings: QuickSettings): GamePadButtonInputId {
+-        return when(keycode) {
+-            KeyEvent.KEYCODE_BUTTON_A -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.A else GamePadButtonInputId.B
+-            KeyEvent.KEYCODE_BUTTON_B -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.B else GamePadButtonInputId.A
+-            KeyEvent.KEYCODE_BUTTON_X -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.X else GamePadButtonInputId.Y
+-            KeyEvent.KEYCODE_BUTTON_Y -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.Y else GamePadButtonInputId.X
+-            KeyEvent.KEYCODE_BUTTON_L1 -> GamePadButtonInputId.LeftShoulder
+-            KeyEvent.KEYCODE_BUTTON_L2 -> GamePadButtonInputId.LeftTrigger
+-            KeyEvent.KEYCODE_BUTTON_R1 -> GamePadButtonInputId.RightShoulder
+-            KeyEvent.KEYCODE_BUTTON_R2 -> GamePadButtonInputId.RightTrigger
+-            KeyEvent.KEYCODE_BUTTON_THUMBL -> GamePadButtonInputId.LeftStickButton
+-            KeyEvent.KEYCODE_BUTTON_THUMBR -> GamePadButtonInputId.RightStickButton
+-            KeyEvent.KEYCODE_BUTTON_11 -> GamePadButtonInputId.LeftStickButton
+-            KeyEvent.KEYCODE_BUTTON_12 -> GamePadButtonInputId.RightStickButton
+-            KeyEvent.KEYCODE_DPAD_UP -> GamePadButtonInputId.DpadUp
+-            KeyEvent.KEYCODE_DPAD_DOWN -> GamePadButtonInputId.DpadDown
+-            KeyEvent.KEYCODE_DPAD_LEFT -> GamePadButtonInputId.DpadLeft
+-            KeyEvent.KEYCODE_DPAD_RIGHT -> GamePadButtonInputId.DpadRight
+-            KeyEvent.KEYCODE_BUTTON_START -> GamePadButtonInputId.Plus
+-            KeyEvent.KEYCODE_BUTTON_SELECT -> GamePadButtonInputId.Minus
+-            else -> GamePadButtonInputId.None
+-        }
+-    }
+-
+-    private fun mapJoyConSingleButton(
+-        type: ControllerDeviceType,
+-        keycode: Int,
+-        base: GamePadButtonInputId
+-    ): GamePadButtonInputId {
+-        val result = when(type) {
+-            ControllerDeviceType.JoyConLeft -> when(keycode) {
+-                KeyEvent.KEYCODE_DPAD_UP -> GamePadButtonInputId.Y
+-                KeyEvent.KEYCODE_DPAD_DOWN -> GamePadButtonInputId.A
+-                KeyEvent.KEYCODE_DPAD_LEFT -> GamePadButtonInputId.B
+-                KeyEvent.KEYCODE_DPAD_RIGHT -> GamePadButtonInputId.X
+-                else -> when {
+-                    isJoyConSlKey(keycode) -> GamePadButtonInputId.LeftShoulder
+-                    isJoyConSrKey(keycode) -> GamePadButtonInputId.RightShoulder
+-                    else -> base
+-                }
+-            }
+-            ControllerDeviceType.JoyConRight -> when(keycode) {
+-                KeyEvent.KEYCODE_BUTTON_Y -> GamePadButtonInputId.A
+-                KeyEvent.KEYCODE_BUTTON_B -> GamePadButtonInputId.B
+-                KeyEvent.KEYCODE_BUTTON_X -> GamePadButtonInputId.X
+-                KeyEvent.KEYCODE_BUTTON_A -> GamePadButtonInputId.Y
+-                else -> when {
+-                    isJoyConSlKey(keycode) -> GamePadButtonInputId.LeftShoulder
+-                    isJoyConSrKey(keycode) -> GamePadButtonInputId.RightShoulder
+-                    else -> base
+-                }
+-            }
+-            else -> base
+-        }
+-        Log.d("joycon", "mapJoyConSingleButton $type , keycode:${keycode}, result:${result}")
+-        return result
+-    }
+-
+-    private fun mapJoyConPairedSecondaryButton(
+-        keycode: Int,
+-        base: GamePadButtonInputId,
+-        quickSettings: QuickSettings
+-    ): GamePadButtonInputId {
+-        // Respect layout preference for ABXY when Joy-Con pair is used horizontally.
+-        return when(keycode) {
+-            KeyEvent.KEYCODE_BUTTON_A -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.A else GamePadButtonInputId.B
+-            KeyEvent.KEYCODE_BUTTON_B -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.B else GamePadButtonInputId.A
+-            KeyEvent.KEYCODE_BUTTON_X -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.X else GamePadButtonInputId.Y
+-            KeyEvent.KEYCODE_BUTTON_Y -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.Y else GamePadButtonInputId.X
+-            else -> base
+-        }
+-    }
+-
+-    private fun handleGenericMotion(ev: MotionEvent, device: InputDevice, controllerId: Int) {
+-        val leftStickX = ev.getAxisValue(MotionEvent.AXIS_X)
+-        val leftStickY = ev.getAxisValue(MotionEvent.AXIS_Y)
+-        val rightStickX = ev.getAxisValue(MotionEvent.AXIS_Z)
+-        val rightStickY = ev.getAxisValue(MotionEvent.AXIS_RZ)
+-
+-        KenjinxNative.inputSetStickAxis(1, leftStickX, -leftStickY, controllerId)
+-        KenjinxNative.inputSetStickAxis(2, rightStickX, -rightStickY, controllerId)
+-
+-        handleHatDpad(ev, device, controllerId)
+-    }
+-
+-    private fun handleJoyConPrimaryMotion(ev: MotionEvent, device: InputDevice, controllerId: Int) {
+-        val x = ev.axisValue(device, MotionEvent.AXIS_X)
+-        val y = ev.axisValue(device, MotionEvent.AXIS_Y)
+-        KenjinxNative.inputSetStickAxis(1, x, -y, controllerId)
+-        handleHatDpad(ev, device, controllerId)
+-    }
+-
+-    private fun handleJoyConSecondaryMotion(ev: MotionEvent, device: InputDevice, controllerId: Int) {
+-        val x = ev.axisValue(device, MotionEvent.AXIS_Z, MotionEvent.AXIS_X)
+-        val y = ev.axisValue(device, MotionEvent.AXIS_RZ, MotionEvent.AXIS_Y)
+-        KenjinxNative.inputSetStickAxis(2, x, -y, controllerId)
+-    }
+-
+-    private fun handleJoyConSingleMotion(ev: MotionEvent, device: InputDevice, runtime: ControllerRuntimeInfo) {
+-        val (rawX, rawY) = when(runtime.profile.type) {
+-            ControllerDeviceType.JoyConLeft -> {
+-                ev.axisValue(device, MotionEvent.AXIS_X) to ev.axisValue(device, MotionEvent.AXIS_Y)
+-            }
+-            ControllerDeviceType.JoyConRight -> {
+-                ev.axisValue(device, MotionEvent.AXIS_Z, MotionEvent.AXIS_X) to ev.axisValue(device, MotionEvent.AXIS_RZ, MotionEvent.AXIS_Y)
+-            }
+-            else -> ev.axisValue(device, MotionEvent.AXIS_X) to ev.axisValue(device, MotionEvent.AXIS_Y)
+-        }
+-        val (rotatedX, rotatedY) = when(runtime.profile.type) {
+-            ControllerDeviceType.JoyConLeft -> Pair(rawY, -rawX)
+-            ControllerDeviceType.JoyConRight -> Pair(-rawY, rawX)
+-            else -> Pair(rawX, rawY)
+-        }
+-        KenjinxNative.inputSetStickAxis(1, rotatedX, -rotatedY, runtime.controllerId)
+-    }
+-
+-    private fun handleHatDpad(ev: MotionEvent, device: InputDevice, controllerId: Int) {
+-        if(device.sources and InputDevice.SOURCE_DPAD == InputDevice.SOURCE_DPAD) {
+-            return
+-        }
+-        val dPadHor = ev.getAxisValue(MotionEvent.AXIS_HAT_X)
+-        val dPadVert = ev.getAxisValue(MotionEvent.AXIS_HAT_Y)
+-
+-        if(abs(dPadVert) < 0.01f) {
+-            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadUp.ordinal, controllerId)
+-            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadDown.ordinal, controllerId)
+-        }
+-        if(abs(dPadHor) < 0.01f) {
+-            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadLeft.ordinal, controllerId)
+-            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadRight.ordinal, controllerId)
+-        }
+-        if(dPadVert < 0.0f) {
+-            KenjinxNative.inputSetButtonPressed(GamePadButtonInputId.DpadUp.ordinal, controllerId)
+-            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadDown.ordinal, controllerId)
+-        }
+-        if(dPadHor < 0.0f) {
+-            KenjinxNative.inputSetButtonPressed(GamePadButtonInputId.DpadLeft.ordinal, controllerId)
+-            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadRight.ordinal, controllerId)
+-        }
+-        if(dPadVert > 0.0f) {
+-            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadUp.ordinal, controllerId)
+-            KenjinxNative.inputSetButtonPressed(GamePadButtonInputId.DpadDown.ordinal, controllerId)
+-        }
+-        if(dPadHor > 0.0f) {
+-            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadLeft.ordinal, controllerId)
+-            KenjinxNative.inputSetButtonPressed(GamePadButtonInputId.DpadRight.ordinal, controllerId)
+-        }
+-    }
+-
+-    private fun MotionEvent.axisValue(device: InputDevice, vararg axes: Int): Float {
+-        for(axis in axes) {
+-            val range = device.getMotionRange(axis, InputDevice.SOURCE_JOYSTICK)
+-            if(range != null) {
+-                return getAxisValue(axis)
+-            }
+-        }
+-        return 0f
+-    }
+-}
++package org.kenjinx.android
++
++import android.util.Log
++import android.view.InputDevice
++import android.view.KeyEvent
++import android.view.MotionEvent
++import org.kenjinx.android.controllers.ControllerDeviceType
++import org.kenjinx.android.controllers.ControllerMatchingManager
++import org.kenjinx.android.controllers.ControllerMode
++import org.kenjinx.android.controllers.ControllerRuntimeInfo
++import org.kenjinx.android.viewmodels.QuickSettings
++import kotlin.math.abs
++
++private val joyConSlKeyCode: Int? = KeyEvent.keyCodeFromString("KEYCODE_BUTTON_SL").takeIf { it != KeyEvent.KEYCODE_UNKNOWN }
++private val joyConSrKeyCode: Int? = KeyEvent.keyCodeFromString("KEYCODE_BUTTON_SR").takeIf { it != KeyEvent.KEYCODE_UNKNOWN }
++
++private fun isJoyConSlKey(keyCode: Int): Boolean {
++    if(keyCode == KeyEvent.KEYCODE_BUTTON_1) {
++        return true
++    }
++    return joyConSlKeyCode?.let { keyCode == it } ?: false
++}
++
++private fun isJoyConSrKey(keyCode: Int): Boolean {
++    if(keyCode == KeyEvent.KEYCODE_BUTTON_2) {
++        return true
++    }
++    return joyConSrKeyCode?.let { keyCode == it } ?: false
++}
++
++class PhysicalControllerManager(val activity: MainActivity) {
++
++    fun onKeyEvent(event: KeyEvent): Boolean {
++        Log.d("joycon", "resolveButtonId: $event")
++
++        val device = event.device ?: return false
++        if(!device.isGamepad) return false
++
++        val runtime = ControllerMatchingManager.getRuntimeInfo(device.id) ?: return false
++        val id = resolveButtonId(event.keyCode, runtime)
++        if(id == GamePadButtonInputId.None) {
++            return false
++        }
++
++        val isNotFallback = (event.flags and KeyEvent.FLAG_FALLBACK) == 0
++        if(!isNotFallback) {
++            return true
++        }
++
++        when(event.action) {
++            KeyEvent.ACTION_UP -> KenjinxNative.inputSetButtonReleased(id.ordinal, runtime.controllerId)
++            KeyEvent.ACTION_DOWN -> KenjinxNative.inputSetButtonPressed(id.ordinal, runtime.controllerId)
++        }
++        return true
++    }
++
++    fun onMotionEvent(ev: MotionEvent) {
++        if(ev.action != MotionEvent.ACTION_MOVE) {
++            return
++        }
++        val device = ev.device ?: return
++        if(!device.isGamepad) return
++
++        val runtime = ControllerMatchingManager.getRuntimeInfo(device.id) ?: return
++        when(runtime.profile.mode) {
++            ControllerMode.GenericMatched -> handleGenericMotion(ev, device, runtime.controllerId)
++            ControllerMode.JoyConSingle -> handleJoyConSingleMotion(ev, device, runtime)
++            ControllerMode.JoyConPairedPrimary -> handleJoyConPrimaryMotion(ev, device, runtime.controllerId)
++            ControllerMode.JoyConPairedSecondary -> handleJoyConSecondaryMotion(ev, device, runtime.controllerId)
++            ControllerMode.Unmatched -> {}
++        }
++    }
++
++    private fun resolveButtonId(keyCode: Int, runtime: ControllerRuntimeInfo): GamePadButtonInputId {
++        val quickSettings = QuickSettings(activity)
++        val customMapping = ControllerButtonMappings.getMapping(
++            activity,
++            runtime.profile.descriptor,
++            keyCode
++        )
++        if (customMapping != null) return customMapping
++
++        val base = mapGenericButton(keyCode, quickSettings)
++        Log.d("joycon", "resolveButtonId: $keyCode → $base, mode:${runtime.profile.mode}")
++        return when(runtime.profile.mode) {
++            ControllerMode.JoyConSingle -> mapJoyConSingleButton(runtime.profile.type, keyCode, base)
++            ControllerMode.JoyConPairedSecondary -> mapJoyConPairedSecondaryButton(keyCode, base, quickSettings)
++            else -> base
++        }
++    }
++
++    private fun mapGenericButton(keycode: Int, quickSettings: QuickSettings): GamePadButtonInputId {
++        return when(keycode) {
++            KeyEvent.KEYCODE_BUTTON_A -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.A else GamePadButtonInputId.B
++            KeyEvent.KEYCODE_BUTTON_B -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.B else GamePadButtonInputId.A
++            KeyEvent.KEYCODE_BUTTON_X -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.X else GamePadButtonInputId.Y
++            KeyEvent.KEYCODE_BUTTON_Y -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.Y else GamePadButtonInputId.X
++            KeyEvent.KEYCODE_BUTTON_L1 -> GamePadButtonInputId.LeftShoulder
++            KeyEvent.KEYCODE_BUTTON_L2 -> GamePadButtonInputId.LeftTrigger
++            KeyEvent.KEYCODE_BUTTON_R1 -> GamePadButtonInputId.RightShoulder
++            KeyEvent.KEYCODE_BUTTON_R2 -> GamePadButtonInputId.RightTrigger
++            KeyEvent.KEYCODE_BUTTON_THUMBL -> GamePadButtonInputId.LeftStickButton
++            KeyEvent.KEYCODE_BUTTON_THUMBR -> GamePadButtonInputId.RightStickButton
++            KeyEvent.KEYCODE_BUTTON_11 -> GamePadButtonInputId.LeftStickButton
++            KeyEvent.KEYCODE_BUTTON_12 -> GamePadButtonInputId.RightStickButton
++            KeyEvent.KEYCODE_DPAD_UP -> GamePadButtonInputId.DpadUp
++            KeyEvent.KEYCODE_DPAD_DOWN -> GamePadButtonInputId.DpadDown
++            KeyEvent.KEYCODE_DPAD_LEFT -> GamePadButtonInputId.DpadLeft
++            KeyEvent.KEYCODE_DPAD_RIGHT -> GamePadButtonInputId.DpadRight
++            KeyEvent.KEYCODE_BUTTON_START -> GamePadButtonInputId.Plus
++            KeyEvent.KEYCODE_BUTTON_SELECT -> GamePadButtonInputId.Minus
++            else -> GamePadButtonInputId.None
++        }
++    }
++
++    private fun mapJoyConSingleButton(
++        type: ControllerDeviceType,
++        keycode: Int,
++        base: GamePadButtonInputId
++    ): GamePadButtonInputId {
++        val result = when(type) {
++            ControllerDeviceType.JoyConLeft -> when(keycode) {
++                KeyEvent.KEYCODE_DPAD_UP -> GamePadButtonInputId.Y
++                KeyEvent.KEYCODE_DPAD_DOWN -> GamePadButtonInputId.A
++                KeyEvent.KEYCODE_DPAD_LEFT -> GamePadButtonInputId.B
++                KeyEvent.KEYCODE_DPAD_RIGHT -> GamePadButtonInputId.X
++                else -> when {
++                    isJoyConSlKey(keycode) -> GamePadButtonInputId.LeftShoulder
++                    isJoyConSrKey(keycode) -> GamePadButtonInputId.RightShoulder
++                    else -> base
++                }
++            }
++            ControllerDeviceType.JoyConRight -> when(keycode) {
++                KeyEvent.KEYCODE_BUTTON_Y -> GamePadButtonInputId.A
++                KeyEvent.KEYCODE_BUTTON_B -> GamePadButtonInputId.B
++                KeyEvent.KEYCODE_BUTTON_X -> GamePadButtonInputId.X
++                KeyEvent.KEYCODE_BUTTON_A -> GamePadButtonInputId.Y
++                else -> when {
++                    isJoyConSlKey(keycode) -> GamePadButtonInputId.LeftShoulder
++                    isJoyConSrKey(keycode) -> GamePadButtonInputId.RightShoulder
++                    else -> base
++                }
++            }
++            else -> base
++        }
++        Log.d("joycon", "mapJoyConSingleButton $type , keycode:${keycode}, result:${result}")
++        return result
++    }
++
++    private fun mapJoyConPairedSecondaryButton(
++        keycode: Int,
++        base: GamePadButtonInputId,
++        quickSettings: QuickSettings
++    ): GamePadButtonInputId {
++        // Respect layout preference for ABXY when Joy-Con pair is used horizontally.
++        return when(keycode) {
++            KeyEvent.KEYCODE_BUTTON_A -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.A else GamePadButtonInputId.B
++            KeyEvent.KEYCODE_BUTTON_B -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.B else GamePadButtonInputId.A
++            KeyEvent.KEYCODE_BUTTON_X -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.X else GamePadButtonInputId.Y
++            KeyEvent.KEYCODE_BUTTON_Y -> if(!quickSettings.useSwitchLayout) GamePadButtonInputId.Y else GamePadButtonInputId.X
++            else -> base
++        }
++    }
++
++    private fun handleGenericMotion(ev: MotionEvent, device: InputDevice, controllerId: Int) {
++        val settings = QuickSettings(activity)
++        val deadzone = settings.controllerStickDeadzone.coerceIn(0.0f, 0.45f)
++        val sensitivity = settings.controllerStickSensitivity.coerceIn(0.1f, 3.0f)
++
++        fun processStick(rawX: Float, rawY: Float): Pair<Float, Float> {
++            val magnitude = kotlin.math.sqrt(rawX * rawX + rawY * rawY)
++
++            if(magnitude <= deadzone || magnitude < 0.0001f) {
++                return 0.0f to 0.0f
++            }
++
++            val adjustedMagnitude =
++                ((magnitude - deadzone) / (1.0f - deadzone))
++                    .coerceIn(0.0f, 1.0f)
++
++            val scale = (adjustedMagnitude / magnitude) * sensitivity
++
++            return (rawX * scale).coerceIn(-1.0f, 1.0f) to
++                   (rawY * scale).coerceIn(-1.0f, 1.0f)
++        }
++
++        val left = processStick(
++            ev.getAxisValue(MotionEvent.AXIS_X),
++            ev.getAxisValue(MotionEvent.AXIS_Y)
++        )
++
++        val right = processStick(
++            ev.getAxisValue(MotionEvent.AXIS_Z),
++            ev.getAxisValue(MotionEvent.AXIS_RZ)
++        )
++
++        KenjinxNative.inputSetStickAxis(1, left.first, -left.second, controllerId)
++        KenjinxNative.inputSetStickAxis(2, right.first, -right.second, controllerId)
++
++        handleHatDpad(ev, device, controllerId)
++    }
++
++    private fun handleJoyConPrimaryMotion(ev: MotionEvent, device: InputDevice, controllerId: Int) {
++        val x = ev.axisValue(device, MotionEvent.AXIS_X)
++        val y = ev.axisValue(device, MotionEvent.AXIS_Y)
++        KenjinxNative.inputSetStickAxis(1, x, -y, controllerId)
++        handleHatDpad(ev, device, controllerId)
++    }
++
++    private fun handleJoyConSecondaryMotion(ev: MotionEvent, device: InputDevice, controllerId: Int) {
++        val x = ev.axisValue(device, MotionEvent.AXIS_Z, MotionEvent.AXIS_X)
++        val y = ev.axisValue(device, MotionEvent.AXIS_RZ, MotionEvent.AXIS_Y)
++        KenjinxNative.inputSetStickAxis(2, x, -y, controllerId)
++    }
++
++    private fun handleJoyConSingleMotion(ev: MotionEvent, device: InputDevice, runtime: ControllerRuntimeInfo) {
++        val (rawX, rawY) = when(runtime.profile.type) {
++            ControllerDeviceType.JoyConLeft -> {
++                ev.axisValue(device, MotionEvent.AXIS_X) to ev.axisValue(device, MotionEvent.AXIS_Y)
++            }
++            ControllerDeviceType.JoyConRight -> {
++                ev.axisValue(device, MotionEvent.AXIS_Z, MotionEvent.AXIS_X) to ev.axisValue(device, MotionEvent.AXIS_RZ, MotionEvent.AXIS_Y)
++            }
++            else -> ev.axisValue(device, MotionEvent.AXIS_X) to ev.axisValue(device, MotionEvent.AXIS_Y)
++        }
++        val (rotatedX, rotatedY) = when(runtime.profile.type) {
++            ControllerDeviceType.JoyConLeft -> Pair(rawY, -rawX)
++            ControllerDeviceType.JoyConRight -> Pair(-rawY, rawX)
++            else -> Pair(rawX, rawY)
++        }
++        KenjinxNative.inputSetStickAxis(1, rotatedX, -rotatedY, runtime.controllerId)
++    }
++
++    private fun handleHatDpad(ev: MotionEvent, device: InputDevice, controllerId: Int) {
++        if(device.sources and InputDevice.SOURCE_DPAD == InputDevice.SOURCE_DPAD) {
++            return
++        }
++        val dPadHor = ev.getAxisValue(MotionEvent.AXIS_HAT_X)
++        val dPadVert = ev.getAxisValue(MotionEvent.AXIS_HAT_Y)
++
++        if(abs(dPadVert) < 0.01f) {
++            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadUp.ordinal, controllerId)
++            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadDown.ordinal, controllerId)
++        }
++        if(abs(dPadHor) < 0.01f) {
++            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadLeft.ordinal, controllerId)
++            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadRight.ordinal, controllerId)
++        }
++        if(dPadVert < 0.0f) {
++            KenjinxNative.inputSetButtonPressed(GamePadButtonInputId.DpadUp.ordinal, controllerId)
++            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadDown.ordinal, controllerId)
++        }
++        if(dPadHor < 0.0f) {
++            KenjinxNative.inputSetButtonPressed(GamePadButtonInputId.DpadLeft.ordinal, controllerId)
++            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadRight.ordinal, controllerId)
++        }
++        if(dPadVert > 0.0f) {
++            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadUp.ordinal, controllerId)
++            KenjinxNative.inputSetButtonPressed(GamePadButtonInputId.DpadDown.ordinal, controllerId)
++        }
++        if(dPadHor > 0.0f) {
++            KenjinxNative.inputSetButtonReleased(GamePadButtonInputId.DpadLeft.ordinal, controllerId)
++            KenjinxNative.inputSetButtonPressed(GamePadButtonInputId.DpadRight.ordinal, controllerId)
++        }
++    }
++
++    private fun MotionEvent.axisValue(device: InputDevice, vararg axes: Int): Float {
++        for(axis in axes) {
++            val range = device.getMotionRange(axis, InputDevice.SOURCE_JOYSTICK)
++            if(range != null) {
++                return getAxisValue(axis)
++            }
++        }
++        return 0f
++    }
++}
+diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/QuickSettings.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/QuickSettings.kt
+index 09f6f5f..0a84bd1 100644
+--- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/QuickSettings.kt
++++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/QuickSettings.kt
+@@ -54,6 +54,7 @@ class QuickSettings(val activity: Activity) {
+     var useControllerSensor: Boolean
+     var enablePerformanceMode: Boolean
+     var controllerStickSensitivity: Float
++    var controllerStickDeadzone: Float
+     var enableStubLogs: Boolean
+     var enableInfoLogs: Boolean
+     var enableWarningLogs: Boolean
+@@ -101,6 +102,7 @@ class QuickSettings(val activity: Activity) {
+         useControllerSensor = sharedPref.getBoolean("useControllerSensor", false)
+         enablePerformanceMode = sharedPref.getBoolean("enablePerformanceMode", true)
+         controllerStickSensitivity = sharedPref.getFloat("controllerStickSensitivity", 1.0f)
++        controllerStickDeadzone = sharedPref.getFloat("controllerStickDeadzone", 0.12f).coerceIn(0f, 0.45f)
+         enableStubLogs = sharedPref.getBoolean("enableStubLogs", false)
+         enableInfoLogs = sharedPref.getBoolean("enableInfoLogs", true)
+         enableWarningLogs = sharedPref.getBoolean("enableWarningLogs", true)
+@@ -144,7 +146,8 @@ class QuickSettings(val activity: Activity) {
+             putBoolean("enableMotion", enableMotion)
+             putBoolean("useControllerSensor", useControllerSensor)
+             putBoolean("enablePerformanceMode", enablePerformanceMode)
+-            putFloat("controllerStickSensitivity", controllerStickSensitivity)
++            putFloat("controllerStickSensitivity", controllerStickSensitivity.coerceIn(0.1f, 3f))
++            putFloat("controllerStickDeadzone", controllerStickDeadzone.coerceIn(0f, 0.45f))
+             putBoolean("enableStubLogs", enableStubLogs)
+             putBoolean("enableInfoLogs", enableInfoLogs)
+             putBoolean("enableWarningLogs", enableWarningLogs)
+diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/SettingsViewModel.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/SettingsViewModel.kt
+index 74df227..c5d5b18 100644
+--- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/SettingsViewModel.kt
++++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/SettingsViewModel.kt
+@@ -230,117 +230,199 @@ class SettingsViewModel(val activity: MainActivity) {
+             )
+     }
+ 
++
+     fun selectKey(installState: MutableState<KeyInstallState>) {
+-        if (installState.value != KeyInstallState.File)
+-            return
++        if (installState.value != KeyInstallState.File) return
+ 
+-        activity.storageHelper!!.onFileSelected = { _, files ->
++        activity.storageHelper?.onFileSelected = callback@{ _, files ->
+             val file = files.firstOrNull()
+-            file?.apply {
+-                if (name == "prod.keys") {
++
++            if (file == null) {
++                activity.storageHelper?.onFileSelected = previousFileCallback
++                return@callback
++            }
++
++            if (!file.name.equals("prod.keys", ignoreCase = true)) {
++                selectedKeyFile = file
++                installState.value = KeyInstallState.Cancelled
++                activity.storageHelper?.onFileSelected = previousFileCallback
++                return@callback
++            }
++
++            installState.value = KeyInstallState.Install
++
++            thread {
++                val valid = try {
++                    activity.contentResolver.openFileDescriptor(file.uri, "r")?.use {
++                        KenjinxNative.deviceVerifyKeys(it.fd)
++                    } ?: false
++                } catch (ex: Exception) {
++                    false
++                }
++
++                activity.runOnUiThread {
+                     selectedKeyFile = file
+-                    installState.value = KeyInstallState.Query
+-                } else {
+-                    installState.value = KeyInstallState.Cancelled
++                    installState.value =
++                        if (valid) KeyInstallState.Query
++                        else KeyInstallState.Cancelled
+                 }
+             }
+-            activity.storageHelper!!.onFileSelected = previousFileCallback
++
++            activity.storageHelper?.onFileSelected = previousFileCallback
+         }
++
+         activity.storageHelper?.storage?.openFilePicker()
+     }
+ 
+-    fun installKey(installState: MutableState<KeyInstallState>) {
+-        if (installState.value != KeyInstallState.Query)
+-            return
+-        if (selectedKeyFile == null) {
++        fun installKey(installState: MutableState<KeyInstallState>) {
++        if (installState.value != KeyInstallState.Query) return
++
++        val source = selectedKeyFile
++        if (source == null) {
+             installState.value = KeyInstallState.File
+             return
+         }
+-        selectedKeyFile?.apply {
+-            val outputFolder = File(MainActivity.AppPath + "/system")
+-            val outputFile = File(MainActivity.AppPath + "/system/" + name)
+-            outputFile.delete()
+-            installState.value = KeyInstallState.Install
+-            thread {
+-                Thread.sleep(1000)
+-                this.copyFileTo(
+-                    activity,
+-                    outputFolder,
+-                    callback = object : FileCallback() {
+-                        override fun onCompleted(result: Any) {
+-                            KenjinxNative.deviceReloadFilesystem()
+-                            installState.value = KeyInstallState.Done
+-                        }
+-                    }
++
++        installState.value = KeyInstallState.Install
++
++        thread {
++            val success = try {
++                val systemDirectory = File(MainActivity.AppPath, "system")
++
++                if (!systemDirectory.exists() && !systemDirectory.mkdirs()) {
++                    throw java.io.IOException("Unable to create system directory")
++                }
++
++                val destination = File(systemDirectory, "prod.keys")
++                val temporary = File(systemDirectory, "prod.keys.new")
++                val backup = File(
++                    systemDirectory,
++                    "prod.keys.backup-" + System.currentTimeMillis()
+                 )
++
++                if (temporary.exists()) temporary.delete()
++
++                activity.contentResolver.openInputStream(source.uri)?.use { input ->
++                    FileOutputStream(temporary).use { output ->
++                        input.copyTo(output)
++                        output.fd.sync()
++                    }
++                } ?: throw java.io.IOException("Unable to read selected keys file")
++
++                if (destination.exists() && !destination.renameTo(backup)) {
++                    throw java.io.IOException("Unable to preserve previous keys")
++                }
++
++                if (!temporary.renameTo(destination)) {
++                    if (backup.exists()) backup.renameTo(destination)
++                    throw java.io.IOException("Unable to install new keys")
++                }
++
++                KenjinxNative.deviceReloadFilesystem()
++                true
++            } catch (ex: Exception) {
++                false
++            }
++
++            activity.runOnUiThread {
++                installState.value =
++                    if (success) KeyInstallState.Done else KeyInstallState.Cancelled
+             }
+         }
+     }
+ 
+-    fun clearKeySelection(installState: MutableState<KeyInstallState>) {
++        fun clearKeySelection(installState: MutableState<KeyInstallState>) {
+         selectedKeyFile = null
+         installState.value = KeyInstallState.File
+     }
+ 
++
+     fun selectFirmware(installState: MutableState<FirmwareInstallState>) {
+-        if (installState.value != FirmwareInstallState.File)
+-            return
++        if (installState.value != FirmwareInstallState.File) return
+ 
+-        activity.storageHelper!!.onFileSelected = { _, files ->
++        activity.storageHelper?.onFileSelected = callback@{ _, files ->
+             val file = files.firstOrNull()
+-            file?.apply {
+-                if (extension == "xci" || extension == "zip") {
+-                    installState.value = FirmwareInstallState.Verifying
+-                    thread {
+-                        val descriptor = activity.contentResolver.openFileDescriptor(file.uri, "rw")
+-                        descriptor?.use { d ->
+-                            selectedFirmwareVersion = KenjinxNative.deviceVerifyFirmware(d.fd, extension == "xci")
+-                            selectedFirmwareFile = file
+-                            if (!selectedFirmwareVersion.isEmpty()) {
+-                                installState.value = FirmwareInstallState.Query
+-                            } else {
+-                                installState.value = FirmwareInstallState.Cancelled
+-                            }
+-                        }
+-                    }
+-                } else {
+-                    installState.value = FirmwareInstallState.Cancelled
++
++            if (file == null) {
++                activity.storageHelper?.onFileSelected = previousFileCallback
++                return@callback
++            }
++
++            val ext = file.extension.lowercase()
++
++            if (ext != "xci" && ext != "zip") {
++                selectedFirmwareFile = file
++                selectedFirmwareVersion = ""
++                installState.value = FirmwareInstallState.Cancelled
++                activity.storageHelper?.onFileSelected = previousFileCallback
++                return@callback
++            }
++
++            installState.value = FirmwareInstallState.Verifying
++
++            thread {
++                var version = ""
++
++                val valid = try {
++                    activity.contentResolver.openFileDescriptor(file.uri, "r")?.use {
++                        version = KenjinxNative.deviceVerifyFirmware(it.fd, ext == "xci")
++                        version.isNotBlank()
++                    } ?: false
++                } catch (ex: Exception) {
++                    false
++                }
++
++                activity.runOnUiThread {
++                    selectedFirmwareFile = file
++                    selectedFirmwareVersion = version
++                    installState.value =
++                        if (valid) FirmwareInstallState.Query
++                        else FirmwareInstallState.Cancelled
+                 }
+             }
+-            activity.storageHelper!!.onFileSelected = previousFileCallback
++
++            activity.storageHelper?.onFileSelected = previousFileCallback
+         }
++
+         activity.storageHelper?.storage?.openFilePicker()
+     }
+ 
++    
+     fun installFirmware(installState: MutableState<FirmwareInstallState>) {
+-        if (installState.value != FirmwareInstallState.Query)
+-            return
+-        if (selectedFirmwareFile == null) {
++        if (installState.value != FirmwareInstallState.Query) return
++
++        val file = selectedFirmwareFile
++        if (file == null) {
+             installState.value = FirmwareInstallState.File
+             return
+         }
+-        selectedFirmwareFile?.apply {
+-            val descriptor = activity.contentResolver.openFileDescriptor(uri, "rw")
+-
+-            if(descriptor != null)
+-            {
+-                installState.value = FirmwareInstallState.Install
+-                thread {
+-                    Thread.sleep(1000)
+-
+-                    try {
+-                        KenjinxNative.deviceInstallFirmware(descriptor.fd,extension == "xci")
+-                    } finally {
+-                        MainActivity.mainViewModel?.refreshFirmwareVersion()
+-                        installState.value = FirmwareInstallState.Done
+-                        descriptor.close()
+-                    }
++
++        installState.value = FirmwareInstallState.Install
++
++        thread {
++            val success = try {
++                activity.contentResolver.openFileDescriptor(file.uri, "r")?.use {
++                    KenjinxNative.deviceInstallFirmware(
++                        it.fd,
++                        file.extension.equals("xci", ignoreCase = true)
++                    ) == 1
++                } ?: false
++            } catch (ex: Exception) {
++                false
++            }
++
++            activity.runOnUiThread {
++                if (success) {
++                    KenjinxNative.deviceReloadFilesystem()
++                    installState.value = FirmwareInstallState.Done
++                } else {
++                    installState.value = FirmwareInstallState.Failed
+                 }
+             }
+         }
+     }
+ 
+-    fun clearFirmwareSelection(installState: MutableState<FirmwareInstallState>) {
++        fun clearFirmwareSelection(installState: MutableState<FirmwareInstallState>) {
+         selectedFirmwareFile = null
+         selectedFirmwareVersion = ""
+         installState.value = FirmwareInstallState.File
+@@ -443,7 +525,8 @@ enum class FirmwareInstallState {
+     Verifying,
+     Query,
+     Install,
+-    Done
++    Done,
++    Failed
+ }
+ 
+ enum class DataResetState {
+diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/views/MainView.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/views/MainView.kt
+index bda0d01..444b977 100644
+--- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/views/MainView.kt
++++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/views/MainView.kt
+@@ -19,6 +19,7 @@ class MainView {
+                 composable("user") { UserViews.Main(mainViewModel) }
+                 composable("game") { GameViews.Main() }
+                 composable("settings") { SettingViews.Main(SettingsViewModel(mainViewModel.activity), mainViewModel) }
++                composable("controllers") { ControllerSettingsView { navController.popBackStack() } }
+             }
+         }
+     }
+diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/views/SettingViews.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/views/SettingViews.kt
+index 5e4e189..965ed47 100644
+--- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/views/SettingViews.kt
++++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/views/SettingViews.kt
+@@ -67,7 +67,7 @@ import kotlinx.coroutines.launch
+ import kotlin.concurrent.thread
+ import org.kenjinx.android.MainActivity
+ import org.kenjinx.android.providers.DocumentProvider
+-import org.kenjinx.android.controllers.ControllerMatchingManager
++import org.kenjinx.android.controllers.ControllerMatchingManager
+ import org.kenjinx.android.viewmodels.DataImportState
+ import org.kenjinx.android.viewmodels.DataResetState
+ import org.kenjinx.android.viewmodels.FirmwareInstallState
+@@ -125,7 +125,7 @@ class SettingViews {
+             val firmwareVersion = remember { mutableStateOf(mainViewModel.firmwareVersion) }
+             val showDataResetDialog = remember { mutableStateOf(false) }
+             val showDataImportDialog = remember { mutableStateOf(false) }
+-            val showControllerMatchingDialog = remember { mutableStateOf(false) }
++            val showControllerMatchingDialog = remember { mutableStateOf(false) }
+             val dataResetState = remember { mutableStateOf(DataResetState.Query) }
+             val dataImportState = remember { mutableStateOf(DataImportState.File) }
+             val dataFile = remember { mutableStateOf<DocumentFile?>(null) }
+@@ -875,6 +875,35 @@ class SettingViews {
+                                     }
+                                 }
+ 
++                                FirmwareInstallState.Failed -> {
++                                    Text(
++                                        text = stringResource(R.string.firmware_installation_failed),
++                                        modifier = Modifier
++                                            .fillMaxWidth()
++                                            .padding(start = 8.dp, bottom = 8.dp),
++                                        textAlign = TextAlign.Start
++                                    )
++
++                                    Row(
++                                        horizontalArrangement = Arrangement.SpaceEvenly,
++                                        modifier = Modifier
++                                            .fillMaxWidth()
++                                            .padding(top = 16.dp)
++                                    ) {
++                                        Button(
++                                            onClick = {
++                                                showFirwmareDialog.value = false
++                                                settingsViewModel.clearFirmwareSelection(firmwareInstallState)
++                                            },
++                                            modifier = Modifier
++                                                .weight(1f)
++                                                .padding(horizontal = 8.dp)
++                                        ) {
++                                            Text(text = stringResource(R.string.close))
++                                        }
++                                    }
++                                }
++
+                                 FirmwareInstallState.Cancelled -> {
+                                     val file = settingsViewModel.selectedFirmwareFile
+                                     if(file != null) {
+@@ -1237,6 +1266,9 @@ class SettingViews {
+                         Column(modifier = Modifier.fillMaxWidth()) {
+                             useVirtualController.SwitchSelector(label = stringResource(R.string.use_virtual_controller))
+                             useSwitchLayout.SwitchSelector(label = stringResource(R.string.use_switch_controller_layout))
++                            Button(onClick = { mainViewModel.navController?.navigate("controllers") }) {
++                                Text("Configurar controles e perfis")
++                            }
+                             val interactionSource: MutableInteractionSource = remember { MutableInteractionSource() }
+ 
+                             Row(
+@@ -1282,38 +1314,38 @@ class SettingViews {
+                             enableDocked.SwitchSelector(label = stringResource(R.string.docked_mode))
+                             enableMotion.SwitchSelector(label = stringResource(R.string.motion_sensor))
+                             useControllerSensor.SwitchSelector(label = stringResource(R.string.use_controller_motion_sensor))
+-                            Row(
+-                                modifier = Modifier
+-                                    .fillMaxWidth()
+-                                    .height(56.dp)
+-                                    .padding(horizontal = 8.dp, vertical = 8.dp),
+-                                horizontalArrangement = Arrangement.SpaceBetween,
+-                            ) {
+-                                ActionButton(
+-                                    onClick = {
+-                                        showControllerMatchingDialog.value = true
+-                                    },
+-                                    text = stringResource(R.string.controller_matching_title),
+-                                    icon = Icons.Outlined.VideogameAsset,
+-                                    modifier = Modifier.weight(1f),
+-                                    isFullWidth = false,
+-                                )
+-                            }
++                            Row(
++                                modifier = Modifier
++                                    .fillMaxWidth()
++                                    .height(56.dp)
++                                    .padding(horizontal = 8.dp, vertical = 8.dp),
++                                horizontalArrangement = Arrangement.SpaceBetween,
++                            ) {
++                                ActionButton(
++                                    onClick = {
++                                        showControllerMatchingDialog.value = true
++                                    },
++                                    text = stringResource(R.string.controller_matching_title),
++                                    icon = Icons.Outlined.VideogameAsset,
++                                    modifier = Modifier.weight(1f),
++                                    isFullWidth = false,
++                                )
++                            }
+                         }
+                     }
+-                    SimpleAlertDialog.Custom(
+-                        showDialog = showControllerMatchingDialog,
+-                        onDismissRequest = {
+-                            showControllerMatchingDialog.value = false
+-                            ControllerMatchingManager.cancelJoyConPairing()
+-                        },
+-                        properties = DialogProperties(usePlatformDefaultWidth = false),
+-                    ) {
+-                        ControllerMatchingViews.Dialog(onClose = {
+-                            ControllerMatchingManager.cancelJoyConPairing()
+-                            showControllerMatchingDialog.value = false
+-                        })
+-                    }
++                    SimpleAlertDialog.Custom(
++                        showDialog = showControllerMatchingDialog,
++                        onDismissRequest = {
++                            showControllerMatchingDialog.value = false
++                            ControllerMatchingManager.cancelJoyConPairing()
++                        },
++                        properties = DialogProperties(usePlatformDefaultWidth = false),
++                    ) {
++                        ControllerMatchingViews.Dialog(onClose = {
++                            ControllerMatchingManager.cancelJoyConPairing()
++                            showControllerMatchingDialog.value = false
++                        })
++                    }
+                     ExpandableView(onCardArrowClick = { }, title = stringResource(R.string.system), icon = Icons.Outlined.Settings) {
+                         Column(modifier = Modifier.fillMaxWidth()) {
+                             // Language & Region
+diff --git a/src/KenjinxAndroid/app/src/main/res/values/strings.xml b/src/KenjinxAndroid/app/src/main/res/values/strings.xml
+index f9cbc6c..7b61ba1 100644
+--- a/src/KenjinxAndroid/app/src/main/res/values/strings.xml
++++ b/src/KenjinxAndroid/app/src/main/res/values/strings.xml
+@@ -172,4 +172,5 @@
+     <string name="cancel">Cancel</string>
+     <string name="close">Close</string>
+     <string name="unknown">Unknown</string>
++    <string name="firmware_installation_failed">Firmware installation failed. Check the logs and try again.</string>
+ </resources>
+diff --git a/src/KenjinxAndroid/gradlew b/src/KenjinxAndroid/gradlew
+old mode 100644
+new mode 100755
+diff --git a/src/LibKenjinx/Android/JniExportedMethods.cs b/src/LibKenjinx/Android/JniExportedMethods.cs
+index 8cfb6ae..7d2ec02 100644
+--- a/src/LibKenjinx/Android/JniExportedMethods.cs
++++ b/src/LibKenjinx/Android/JniExportedMethods.cs
+@@ -12,6 +12,7 @@ using Silk.NET.Core.Loader;
+ using Silk.NET.Vulkan;
+ using Silk.NET.Vulkan.Extensions.KHR;
+ using System;
++using System.IO;
+ using System.Collections.Generic;
+ using System.Linq;
+ using System.Numerics;
+@@ -206,41 +207,95 @@ namespace LibKenjinx
+             return LoadApplication(stream, (FileType)type, update);
+         }
+ 
+-        [UnmanagedCallersOnly(EntryPoint = "deviceVerifyFirmware")]
+-        public static IntPtr JniVerifyFirmware(int descriptor, bool isXci)
++        
++        [UnmanagedCallersOnly(EntryPoint = "deviceVerifyKeys")]
++        public static bool JniVerifyKeys(int descriptor)
+         {
+             Logger.Trace?.Print(LogClass.Application, "Jni Function Call");
+ 
+-            var stream = OpenFile(descriptor);
+-
+-            IntPtr stringHandle = 0;
+-            string? version = "0.0";
++            string temporaryDirectory = Path.Combine(
++                Path.GetTempPath(),
++                "kenjinx-keys-" + Guid.NewGuid().ToString("N"));
+ 
+             try
+             {
+-                version = VerifyFirmware(stream, isXci)?.VersionString;
++                var contentManager = SwitchDevice?.ContentManager;
++
++                if (contentManager == null)
++                {
++                    return false;
++                }
++
++                Directory.CreateDirectory(temporaryDirectory);
++
++                string temporaryFile = Path.Combine(temporaryDirectory, "prod.keys");
++
++                using (var input = OpenFile(descriptor))
++                using (var output = File.Create(temporaryFile))
++                {
++                    input.CopyTo(output);
++                }
++
++                contentManager.VerifyKeysFile(temporaryFile);
++                return true;
+             }
+-            catch (Exception _)
++            catch (Exception ex)
+             {
+-                Logger.Error?.Print(LogClass.Service, $"Unable to verify firmware. Exception: {_}");
++                Logger.Error?.Print(LogClass.Service, $"Unable to verify keys. Exception: {ex}");
++                return false;
+             }
+-
+-            if (version != null)
++            finally
+             {
+-                stringHandle = Marshal.StringToHGlobalAnsi(version);
++                try
++                {
++                    if (Directory.Exists(temporaryDirectory))
++                    {
++                        Directory.Delete(temporaryDirectory, true);
++                    }
++                }
++                catch (Exception ex)
++                {
++                    Logger.Error?.Print(LogClass.Service, $"Unable to remove temporary keys directory: {ex.Message}");
++                }
+             }
+-
+-            return stringHandle;
+         }
+ 
+-        [UnmanagedCallersOnly(EntryPoint = "deviceInstallFirmware")]
+-        public static void JniInstallFirmware(int descriptor, bool isXci)
++        [UnmanagedCallersOnly(EntryPoint = "deviceVerifyFirmware")]
++        public static IntPtr JniVerifyFirmware(int descriptor, bool isXci)
++{
++    Logger.Trace?.Print(LogClass.Application, "Jni Function Call");
++
++    string version = string.Empty;
++
++    try
++    {
++        using var stream = OpenFile(descriptor);
++        version = VerifyFirmware(stream, isXci)?.VersionString ?? string.Empty;
++    }
++    catch (Exception ex)
++    {
++        Logger.Error?.Print(LogClass.Service, $"Unable to verify firmware. Exception: {ex}");
++    }
++
++    return Marshal.StringToHGlobalAnsi(version);
++}
++
++[UnmanagedCallersOnly(EntryPoint = "deviceInstallFirmware")]
++        public static int JniInstallFirmware(int descriptor, bool isXci)
+         {
+             Logger.Trace?.Print(LogClass.Application, "Jni Function Call");
+ 
+-            var stream = OpenFile(descriptor);
+-
+-            InstallFirmware(stream, isXci);
++            try
++            {
++                using var stream = OpenFile(descriptor);
++                InstallFirmware(stream, isXci);
++                return 1;
++            }
++            catch (Exception ex)
++            {
++                Logger.Error?.Print(LogClass.Service, $"Unable to install firmware. Exception: {ex}");
++                return 0;
++            }
+         }
+ 
+         [UnmanagedCallersOnly(EntryPoint = "deviceGetInstalledFirmwareVersion")]
+diff --git a/src/Ryujinx.HLE/FileSystem/ContentManager.cs b/src/Ryujinx.HLE/FileSystem/ContentManager.cs
+index 66d4325..ae3ddce 100644
+--- a/src/Ryujinx.HLE/FileSystem/ContentManager.cs
++++ b/src/Ryujinx.HLE/FileSystem/ContentManager.cs
+@@ -567,14 +567,46 @@ namespace Ryujinx.HLE.FileSystem
+ 
+         private void FinishInstallation(string temporaryDirectory, string registeredDirectory)
+         {
+-            if (Directory.Exists(registeredDirectory))
++            string backupDirectory = registeredDirectory + ".backup-" + Guid.NewGuid().ToString("N");
++            bool hadPreviousFirmware = Directory.Exists(registeredDirectory);
++
++            if (hadPreviousFirmware)
+             {
+-                new DirectoryInfo(registeredDirectory).Delete(true);
++                Directory.Move(registeredDirectory, backupDirectory);
+             }
+ 
+-            Directory.Move(temporaryDirectory, registeredDirectory ?? string.Empty);
++            try
++            {
++                Directory.Move(temporaryDirectory, registeredDirectory);
++                LoadEntries();
++            }
++            catch
++            {
++                if (Directory.Exists(registeredDirectory))
++                {
++                    Directory.Delete(registeredDirectory, true);
++                }
+ 
+-            LoadEntries();
++                if (hadPreviousFirmware && Directory.Exists(backupDirectory))
++                {
++                    Directory.Move(backupDirectory, registeredDirectory);
++                }
++
++                LoadEntries();
++                throw;
++            }
++
++            if (hadPreviousFirmware && Directory.Exists(backupDirectory))
++            {
++                try
++                {
++                    Directory.Delete(backupDirectory, true);
++                }
++                catch
++                {
++                    // Keep the backup if cleanup fails.
++                }
++            }
+         }
+ 
+         private void InstallFromDirectory(string firmwareDirectory, string temporaryDirectory)
+@@ -1090,6 +1122,11 @@ namespace Ryujinx.HLE.FileSystem
+                 // Read all lines from the file
+                 string fileName = Path.GetFileName(filePath);
+                 string[] lines = File.ReadAllLines(filePath);
++        if (lines.Length == 0)
++        {
++            throw new FormatException($"Keys file \"{fileName}\" is empty.");
++        }
++
+ 
+                 bool verified = false;
+                 switch (fileName)

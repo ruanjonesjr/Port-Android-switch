@@ -1,0 +1,148 @@
+name: Kenjinx Android Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/kenjinx-android.yml"
+      - "kenjinx-overlay/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Kenjinx APK ARM64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Kenjinx source
+        uses: actions/checkout@v4
+        with:
+          repository: thiagooo0/EHRyujinx
+          ref: 0d42e31d40221a666e9ef5a53c863ddf193b6bbc
+          path: ryujinx-source
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Apply local modifications
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="$GITHUB_WORKSPACE/ryujinx-source"
+          OVERLAY="$GITHUB_WORKSPACE/kenjinx-overlay"
+
+          git -C "$SOURCE" apply --check "$OVERLAY/tracked.patch"
+          git -C "$SOURCE" apply "$OVERLAY/tracked.patch"
+
+          cp -a "$OVERLAY/new-files/." "$SOURCE/"
+
+          chmod +x "$SOURCE/src/KenjinxAndroid/gradlew"
+
+          echo "===== Modified source ====="
+          git -C "$SOURCE" status --short
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.102"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android components
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          yes | sdkmanager --licenses
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "cmake;3.22.1" \
+            "ndk;23.2.8568313" \
+            "ndk;27.2.12479018"
+
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Verify build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          java -version
+          dotnet --info
+
+          echo "===== NDK AOT ====="
+          "$ANDROID_HOME/ndk/23.2.8568313/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
+
+          echo "===== NDK Android ====="
+          "$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
+
+      - name: Prepare temporary debug keystore
+        shell: bash
+        working-directory: ryujinx-source/src/KenjinxAndroid
+        run: |
+          set -euo pipefail
+
+          rm -f app/switchEmu.jks
+
+          keytool -genkeypair \
+            -keystore app/switchEmu.jks \
+            -storepass ehangghost \
+            -alias key \
+            -keypass ehangghost \
+            -dname "CN=Kenjinx Debug,O=Build,C=BR" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000
+
+      - name: Build Kenjinx APK
+        shell: bash
+        working-directory: ryujinx-source/src/KenjinxAndroid
+        run: |
+          set -euo pipefail
+
+          AOT_NDK="$ANDROID_HOME/ndk/23.2.8568313/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            -Porg.kenjinx.config=debug \
+            -Porg.kenjinx.llvm.toolchain.path="$AOT_NDK" \
+            assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="ryujinx-source/src/KenjinxAndroid/app/build/outputs/apk/debug/app-debug.apk"
+
+          test -s "$APK"
+          ls -lh "$APK"
+          sha256sum "$APK"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kenjinx-Android-ARM64
+          path: ryujinx-source/src/KenjinxAndroid/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
