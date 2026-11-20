@@ -13,12 +13,18 @@ import androidx.compose.ui.unit.dp
 import org.kenjinx.android.GamePadButtonInputId
 import org.kenjinx.android.controllers.ControllerButtonMappings
 import org.kenjinx.android.controllers.ControllerMappingCapture
+import org.kenjinx.android.controllers.isGamepad
 import org.kenjinx.android.controllers.NamedControllerProfiles
 import org.kenjinx.android.viewmodels.QuickSettings
 
-private fun connectedGamepads(): List<InputDevice> =
-    InputDevice.getDeviceIds().mapNotNull { InputDevice.getDevice(it) }
-        .filter { it.isGamepad }
+private fun connectedGamepads(): List<InputDevice> {
+    val result = mutableListOf<InputDevice>()
+    for (id in InputDevice.getDeviceIds()) {
+        val device = InputDevice.getDevice(id) ?: continue
+        if (device.isGamepad) result.add(device)
+    }
+    return result
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

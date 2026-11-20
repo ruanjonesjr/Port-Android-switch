@@ -555,6 +555,8 @@ index ba5626f..fe92720 100644
 +import org.kenjinx.android.controllers.ControllerMatchingManager
 +import org.kenjinx.android.controllers.ControllerMode
 +import org.kenjinx.android.controllers.ControllerRuntimeInfo
++import org.kenjinx.android.controllers.ControllerButtonMappings
++import org.kenjinx.android.controllers.isGamepad
 +import org.kenjinx.android.viewmodels.QuickSettings
 +import kotlin.math.abs
 +
