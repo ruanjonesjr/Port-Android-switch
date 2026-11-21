@@ -205,7 +205,7 @@ index b1cf7a3..0de0d6f 100644
  
      companion object {
 diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/KenjinxNative.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/KenjinxNative.kt
-index bb22ab2..e461f4f 100644
+index bb22ab2..8355a66 100644
 --- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/KenjinxNative.kt
 +++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/KenjinxNative.kt
 @@ -55,6 +55,7 @@ interface KenjinxNativeJna : Library {
@@ -225,8 +225,19 @@ index bb22ab2..e461f4f 100644
      fun deviceGetInstalledFirmwareVersion(): String
      fun uiHandlerSetup()
      fun uiHandlerSetResponse(isOkPressed: Boolean, input: String)
+@@ -113,6 +114,10 @@ object KenjinxNative : KenjinxNativeJna by jnaInstance {
+     @JvmStatic
+     fun frameEnded() = MainActivity.frameEnded()
+ 
++    @JvmStatic
++    fun reportCpuWorkDuration(durationNanos: Long) =
++        MainActivity.reportCpuWorkDuration(durationNanos)
++
+     @JvmStatic
+     fun getSurfacePtr(): Long = MainActivity.mainViewModel?.gameHost?.currentSurface ?: -1
+ 
 diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/MainActivity.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/MainActivity.kt
-index d8b8377..c2138a5 100644
+index d8b8377..7e94e97 100644
 --- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/MainActivity.kt
 +++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/MainActivity.kt
 @@ -1,5 +1,7 @@
@@ -265,7 +276,23 @@ index d8b8377..c2138a5 100644
              if(rot == lastKnownRotation) return
  
              rotLog("onDisplayChanged: display.rotation=$rot → ${deg(rot)}°")
-@@ -217,7 +226,6 @@ class MainActivity: BaseActivity() {
+@@ -179,6 +188,15 @@ class MainActivity: BaseActivity() {
+             mainViewModel?.gameHost?.hideProgressIndicator()
+         }
+ 
++        @JvmStatic
++        fun reportCpuWorkDuration(durationNanos: Long) {
++            mainViewModel?.activity?.apply {
++                if (isActive && QuickSettings(this).enablePerformanceMode) {
++                    mainViewModel?.performanceManager?.reportCpuWorkDuration(durationNanos)
++                }
++            }
++        }
++
+         // <<< is called from the Native/Lib page to set the loading progress
+         @JvmStatic
+         fun updateProgress(info: String, percent: Float) {
+@@ -217,7 +235,6 @@ class MainActivity: BaseActivity() {
          super.onCreate(savedInstanceState)
          Log.d("EhangTest", "MainActivity onCreate")
          motionSensorManager = MotionSensorManager(this)
@@ -273,7 +300,7 @@ index d8b8377..c2138a5 100644
  
          if(if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                  !Environment.isExternalStorageManager()
-@@ -291,6 +299,9 @@ class MainActivity: BaseActivity() {
+@@ -291,6 +308,9 @@ class MainActivity: BaseActivity() {
  
      @SuppressLint("RestrictedApi")
      override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -283,7 +310,7 @@ index d8b8377..c2138a5 100644
          if(ControllerMatchingManager.handlePairingKey(event)) {
              return true
          }
-@@ -379,10 +390,11 @@ class MainActivity: BaseActivity() {
+@@ -379,10 +399,11 @@ class MainActivity: BaseActivity() {
      private fun applyOrientationPreference() {
          val pref = QuickSettings(this).orientationPreference
          requestedOrientation = pref.value
@@ -297,8 +324,72 @@ index d8b8377..c2138a5 100644
          }
          rotLog("applyOrientationPreference: rot=$rot → ${deg(rot)}°, pref=${pref.name}")
          try {
+diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PerformanceManager.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PerformanceManager.kt
+index a62b87d..99f3ee2 100644
+--- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PerformanceManager.kt
++++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PerformanceManager.kt
+@@ -1,6 +1,9 @@
+ package org.kenjinx.android
+ 
+ import android.content.Intent
++import android.os.Build
++import android.os.PerformanceHintManager
++import android.os.Process
+ import kotlin.math.abs
+ 
+ class PerformanceManager(private val activity: MainActivity) {
+@@ -25,8 +28,49 @@ class PerformanceManager(private val activity: MainActivity) {
+         }
+     }
+ 
++    private var adpfSession: PerformanceHintManager.Session? = null
++
++    @Synchronized
++    fun reportCpuWorkDuration(durationNanos: Long) {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || durationNanos <= 0L) {
++            return
++        }
++
++        try {
++            val session = adpfSession ?: run {
++                val manager = activity.getSystemService(
++                    PerformanceHintManager::class.java
++                ) ?: return
++
++                manager.createHintSession(
++                    intArrayOf(Process.myTid()),
++                    16_666_667L
++                )?.also {
++                    adpfSession = it
++                } ?: return
++            }
++
++            session.reportActualWorkDuration(durationNanos)
++        } catch (_: Exception) {
++        }
++    }
++
++    @Synchronized
++    private fun closeAdpfSession() {
++        try {
++            adpfSession?.close()
++        } catch (_: Exception) {
++        } finally {
++            adpfSession = null
++        }
++    }
++
+     fun setTurboMode(enable: Boolean) {
+         NativeHelpers.instance.setTurboMode(enable)
+         force60HzRefreshRate(enable, activity)
++
++        if (!enable) {
++            closeAdpfSession()
++        }
+     }
+ }
 diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PhysicalControllerManager.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PhysicalControllerManager.kt
-index ba5626f..fe92720 100644
+index ba5626f..26f3126 100644
 --- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PhysicalControllerManager.kt
 +++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/PhysicalControllerManager.kt
 @@ -1,243 +1,278 @@
@@ -823,6 +914,151 @@ index ba5626f..fe92720 100644
 +        return 0f
 +    }
 +}
+diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/MainViewModel.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/MainViewModel.kt
+index 0f00144..aa6fcae 100644
+--- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/MainViewModel.kt
++++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/MainViewModel.kt
+@@ -97,6 +97,68 @@ class MainViewModel(val activity: MainActivity) {
+         return runCatching { RegionCode.valueOf(stored) }.getOrElse { RegionCode.USA }
+     }
+     // -------------------------------------------------------------------------------
++
++    private fun loadSelectedVulkanDriver(
++        driverViewModel: VulkanDriverViewModel,
++        drivers: List<DriverMetadata>
++    ): Long {
++        val metadata = drivers.find {
++            it.driverPath == driverViewModel.selected
++        } ?: return 0L
++
++        val sourceDriver = File(metadata.driverPath)
++        val sourceParent = sourceDriver.parentFile ?: return 0L
++        if (!sourceDriver.isFile) return 0L
++
++        val sourceFiles = sourceParent.walkTopDown()
++            .filter { it.isFile }
++            .toList()
++
++        val fingerprint = buildString {
++            append(sourceParent.canonicalPath).append('\n')
++            sourceFiles.sortedBy {
++                it.relativeTo(sourceParent).invariantSeparatorsPath
++            }.forEach { file ->
++                append(file.relativeTo(sourceParent).invariantSeparatorsPath)
++                append('|').append(file.length())
++                append('|').append(file.lastModified())
++                append('\n')
++            }
++        }
++
++        val privateDriverPath = File(activity.filesDir, "driver")
++        val marker = File(privateDriverPath, ".kenjinx-driver-cache")
++        val privateLibrary = File(privateDriverPath, metadata.libraryName)
++
++        val cacheValid = privateLibrary.isFile &&
++            marker.isFile &&
++            runCatching { marker.readText() == fingerprint }.getOrDefault(false)
++
++        if (!cacheValid) {
++            if (privateDriverPath.exists() &&
++                !privateDriverPath.deleteRecursively()
++            ) {
++                throw IllegalStateException("Não foi possível limpar a cópia antiga do driver.")
++            }
++
++            if (!privateDriverPath.mkdirs() && !privateDriverPath.isDirectory) {
++                throw IllegalStateException("Não foi possível criar a pasta privada do driver.")
++            }
++
++            sourceFiles.forEach { file ->
++                file.copyTo(File(privateDriverPath, file.name), overwrite = true)
++            }
++
++            marker.writeText(fingerprint)
++        }
++
++        return NativeHelpers.instance.loadDriver(
++            activity.applicationInfo.nativeLibraryDir!! + "/",
++            privateDriverPath.canonicalPath + "/",
++            metadata.libraryName
++        )
++    }
++
+     fun loadGame(game: GameModel, overrideSettings: Boolean? = false, forceNceAndPptc: Boolean? = false): Int {
+         KenjinxNative.deviceReinitEmulation()
+         MainActivity.mainViewModel?.activity?.uiHandler = UiHandler()
+@@ -138,34 +200,7 @@ class MainViewModel(val activity: MainActivity) {
+         val drivers = driverViewModel.getAvailableDrivers()
+         var driverHandle = 0L
+ 
+-        if(driverViewModel.selected.isNotEmpty()) {
+-            val metaData = drivers.find { it.driverPath == driverViewModel.selected }
+-
+-            metaData?.apply {
+-                val privatePath = activity.filesDir
+-                val privateDriverPath = privatePath.canonicalPath + "/driver/"
+-                val pD = File(privateDriverPath)
+-                if(pD.exists())
+-                    pD.deleteRecursively()
+-
+-                pD.mkdirs()
+-                val driver = File(driverViewModel.selected)
+-                val parent = driver.parentFile
+-                if(parent != null) {
+-                    for(file in parent.walkTopDown()) {
+-                        if(file.absolutePath == parent.absolutePath)
+-                            continue
+-                        file.copyTo(File(privateDriverPath + file.name), true)
+-                    }
+-                }
+-
+-                driverHandle = NativeHelpers.instance.loadDriver(
+-                    activity.applicationInfo.nativeLibraryDir!! + "/",
+-                    privateDriverPath,
+-                    this.libraryName
+-                )
+-            }
+-        }
++        driverHandle = loadSelectedVulkanDriver(driverViewModel, drivers)
+         val extensions = nativeInterop.VkRequiredExtensions
+ 
+         success = KenjinxNative.graphicsInitializeRenderer(
+@@ -240,34 +275,7 @@ class MainViewModel(val activity: MainActivity) {
+         val drivers = driverViewModel.getAvailableDrivers()
+         var driverHandle = 0L
+ 
+-        if(driverViewModel.selected.isNotEmpty()) {
+-            val metaData = drivers.find { it.driverPath == driverViewModel.selected }
+-
+-            metaData?.apply {
+-                val privatePath = activity.filesDir
+-                val privateDriverPath = privatePath.canonicalPath + "/driver/"
+-                val pD = File(privateDriverPath)
+-                if(pD.exists())
+-                    pD.deleteRecursively()
+-
+-                pD.mkdirs()
+-                val driver = File(driverViewModel.selected)
+-                val parent = driver.parentFile
+-                if(parent != null) {
+-                    for(file in parent.walkTopDown()) {
+-                        if(file.absolutePath == parent.absolutePath)
+-                            continue
+-                        file.copyTo(File(privateDriverPath + file.name), true)
+-                    }
+-                }
+-
+-                driverHandle = NativeHelpers.instance.loadDriver(
+-                    activity.applicationInfo.nativeLibraryDir!! + "/",
+-                    privateDriverPath,
+-                    this.libraryName
+-                )
+-            }
+-        }
++        driverHandle = loadSelectedVulkanDriver(driverViewModel, drivers)
+         val extensions = nativeInterop.VkRequiredExtensions
+ 
+         success = KenjinxNative.graphicsInitializeRenderer(
 diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/QuickSettings.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/QuickSettings.kt
 index 09f6f5f..0a84bd1 100644
 --- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/QuickSettings.kt
@@ -854,7 +1090,7 @@ index 09f6f5f..0a84bd1 100644
              putBoolean("enableInfoLogs", enableInfoLogs)
              putBoolean("enableWarningLogs", enableWarningLogs)
 diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/SettingsViewModel.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/SettingsViewModel.kt
-index 74df227..c5d5b18 100644
+index 74df227..270a69c 100644
 --- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/SettingsViewModel.kt
 +++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/SettingsViewModel.kt
 @@ -230,117 +230,199 @@ class SettingsViewModel(val activity: MainActivity) {
@@ -1069,7 +1305,7 @@ index 74df227..c5d5b18 100644
          activity.storageHelper?.storage?.openFilePicker()
      }
  
-+    
++
      fun installFirmware(installState: MutableState<FirmwareInstallState>) {
 -        if (installState.value != FirmwareInstallState.Query)
 -            return
@@ -1300,8 +1536,35 @@ index f9cbc6c..7b61ba1 100644
 diff --git a/src/KenjinxAndroid/gradlew b/src/KenjinxAndroid/gradlew
 old mode 100644
 new mode 100755
+diff --git a/src/LibKenjinx/Android/Interop.cs b/src/LibKenjinx/Android/Interop.cs
+index 47db849..9ac18ba 100644
+--- a/src/LibKenjinx/Android/Interop.cs
++++ b/src/LibKenjinx/Android/Interop.cs
+@@ -25,6 +25,7 @@ namespace LibKenjinx.Android
+             ("test", "()V"),
+             ("updateUiHandler", "(JJJIIIIJJ)V"),
+             ("frameEnded", "()V"),
++            ("reportCpuWorkDuration", "(J)V"),
+             ("updateProgress", "(JF)V"),
+             ("getSurfacePtr", "()J"),
+             ("getWindowHandle", "()J")
+@@ -125,6 +126,14 @@ namespace LibKenjinx.Android
+             CallVoidMethod("frameEnded", "()V");
+         }
+ 
++        public static void ReportCpuWorkDuration(long durationNanos)
++        {
++            CallVoidMethod(
++                "reportCpuWorkDuration",
++                "(J)V",
++                JValue.Create(durationNanos.AsBytes()));
++        }
++
+         public static void UpdateProgress(string info, float progress)
+         {
+             using var infoPtr = new TempNativeString(info);
 diff --git a/src/LibKenjinx/Android/JniExportedMethods.cs b/src/LibKenjinx/Android/JniExportedMethods.cs
-index 8cfb6ae..7d2ec02 100644
+index 8cfb6ae..e570aef 100644
 --- a/src/LibKenjinx/Android/JniExportedMethods.cs
 +++ b/src/LibKenjinx/Android/JniExportedMethods.cs
 @@ -12,6 +12,7 @@ using Silk.NET.Core.Loader;
@@ -1318,7 +1581,7 @@ index 8cfb6ae..7d2ec02 100644
  
 -        [UnmanagedCallersOnly(EntryPoint = "deviceVerifyFirmware")]
 -        public static IntPtr JniVerifyFirmware(int descriptor, bool isXci)
-+        
++
 +        [UnmanagedCallersOnly(EntryPoint = "deviceVerifyKeys")]
 +        public static bool JniVerifyKeys(int descriptor)
          {
@@ -1427,6 +1690,35 @@ index 8cfb6ae..7d2ec02 100644
          }
  
          [UnmanagedCallersOnly(EntryPoint = "deviceGetInstalledFirmwareVersion")]
+diff --git a/src/LibKenjinx/LibKenjinx.Graphics.cs b/src/LibKenjinx/LibKenjinx.Graphics.cs
+index 657a7d1..856e1a7 100644
+--- a/src/LibKenjinx/LibKenjinx.Graphics.cs
++++ b/src/LibKenjinx/LibKenjinx.Graphics.cs
+@@ -10,6 +10,7 @@ using Ryujinx.Graphics.OpenGL;
+ using Ryujinx.Graphics.Vulkan;
+ using Silk.NET.Vulkan;
+ using System;
++using System.Diagnostics;
+ using System.Runtime.InteropServices;
+ using System.Threading;
+ 
+@@ -129,7 +130,16 @@ namespace LibKenjinx
+                         if (device.WaitFifo())
+                         {
+                             device.Statistics.RecordFifoStart();
++                            long workStart = Stopwatch.GetTimestamp();
+                             device.ProcessFrame();
++                            long workTicks = Stopwatch.GetTimestamp() - workStart;
++                            long workDurationNanos = (long)(
++                                workTicks * (1_000_000_000.0 / Stopwatch.Frequency));
++
++                            if (workDurationNanos > 0)
++                            {
++                                Interop.ReportCpuWorkDuration(workDurationNanos);
++                            }
+                             device.Statistics.RecordFifoEnd();
+                         }
+ 
 diff --git a/src/Ryujinx.HLE/FileSystem/ContentManager.cs b/src/Ryujinx.HLE/FileSystem/ContentManager.cs
 index 66d4325..ae3ddce 100644
 --- a/src/Ryujinx.HLE/FileSystem/ContentManager.cs
@@ -1494,151 +1786,6 @@ index 66d4325..ae3ddce 100644
  
                  bool verified = false;
                  switch (fileName)
-diff --git a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/MainViewModel.kt b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/MainViewModel.kt
-index 0f00144..aa6fcae 100644
---- a/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/MainViewModel.kt
-+++ b/src/KenjinxAndroid/app/src/main/java/org/kenjinx/android/viewmodels/MainViewModel.kt
-@@ -97,6 +97,68 @@ class MainViewModel(val activity: MainActivity) {
-         return runCatching { RegionCode.valueOf(stored) }.getOrElse { RegionCode.USA }
-     }
-     // -------------------------------------------------------------------------------
-+
-+    private fun loadSelectedVulkanDriver(
-+        driverViewModel: VulkanDriverViewModel,
-+        drivers: List<DriverMetadata>
-+    ): Long {
-+        val metadata = drivers.find {
-+            it.driverPath == driverViewModel.selected
-+        } ?: return 0L
-+
-+        val sourceDriver = File(metadata.driverPath)
-+        val sourceParent = sourceDriver.parentFile ?: return 0L
-+        if (!sourceDriver.isFile) return 0L
-+
-+        val sourceFiles = sourceParent.walkTopDown()
-+            .filter { it.isFile }
-+            .toList()
-+
-+        val fingerprint = buildString {
-+            append(sourceParent.canonicalPath).append('\n')
-+            sourceFiles.sortedBy {
-+                it.relativeTo(sourceParent).invariantSeparatorsPath
-+            }.forEach { file ->
-+                append(file.relativeTo(sourceParent).invariantSeparatorsPath)
-+                append('|').append(file.length())
-+                append('|').append(file.lastModified())
-+                append('\n')
-+            }
-+        }
-+
-+        val privateDriverPath = File(activity.filesDir, "driver")
-+        val marker = File(privateDriverPath, ".kenjinx-driver-cache")
-+        val privateLibrary = File(privateDriverPath, metadata.libraryName)
-+
-+        val cacheValid = privateLibrary.isFile &&
-+            marker.isFile &&
-+            runCatching { marker.readText() == fingerprint }.getOrDefault(false)
-+
-+        if (!cacheValid) {
-+            if (privateDriverPath.exists() &&
-+                !privateDriverPath.deleteRecursively()
-+            ) {
-+                throw IllegalStateException("Não foi possível limpar a cópia antiga do driver.")
-+            }
-+
-+            if (!privateDriverPath.mkdirs() && !privateDriverPath.isDirectory) {
-+                throw IllegalStateException("Não foi possível criar a pasta privada do driver.")
-+            }
-+
-+            sourceFiles.forEach { file ->
-+                file.copyTo(File(privateDriverPath, file.name), overwrite = true)
-+            }
-+
-+            marker.writeText(fingerprint)
-+        }
-+
-+        return NativeHelpers.instance.loadDriver(
-+            activity.applicationInfo.nativeLibraryDir!! + "/",
-+            privateDriverPath.canonicalPath + "/",
-+            metadata.libraryName
-+        )
-+    }
-+
-     fun loadGame(game: GameModel, overrideSettings: Boolean? = false, forceNceAndPptc: Boolean? = false): Int {
-         KenjinxNative.deviceReinitEmulation()
-         MainActivity.mainViewModel?.activity?.uiHandler = UiHandler()
-@@ -138,34 +200,7 @@ class MainViewModel(val activity: MainActivity) {
-         val drivers = driverViewModel.getAvailableDrivers()
-         var driverHandle = 0L
- 
--        if(driverViewModel.selected.isNotEmpty()) {
--            val metaData = drivers.find { it.driverPath == driverViewModel.selected }
--
--            metaData?.apply {
--                val privatePath = activity.filesDir
--                val privateDriverPath = privatePath.canonicalPath + "/driver/"
--                val pD = File(privateDriverPath)
--                if(pD.exists())
--                    pD.deleteRecursively()
--
--                pD.mkdirs()
--                val driver = File(driverViewModel.selected)
--                val parent = driver.parentFile
--                if(parent != null) {
--                    for(file in parent.walkTopDown()) {
--                        if(file.absolutePath == parent.absolutePath)
--                            continue
--                        file.copyTo(File(privateDriverPath + file.name), true)
--                    }
--                }
--
--                driverHandle = NativeHelpers.instance.loadDriver(
--                    activity.applicationInfo.nativeLibraryDir!! + "/",
--                    privateDriverPath,
--                    this.libraryName
--                )
--            }
--        }
-+        driverHandle = loadSelectedVulkanDriver(driverViewModel, drivers)
-         val extensions = nativeInterop.VkRequiredExtensions
- 
-         success = KenjinxNative.graphicsInitializeRenderer(
-@@ -240,34 +275,7 @@ class MainViewModel(val activity: MainActivity) {
-         val drivers = driverViewModel.getAvailableDrivers()
-         var driverHandle = 0L
- 
--        if(driverViewModel.selected.isNotEmpty()) {
--            val metaData = drivers.find { it.driverPath == driverViewModel.selected }
--
--            metaData?.apply {
--                val privatePath = activity.filesDir
--                val privateDriverPath = privatePath.canonicalPath + "/driver/"
--                val pD = File(privateDriverPath)
--                if(pD.exists())
--                    pD.deleteRecursively()
--
--                pD.mkdirs()
--                val driver = File(driverViewModel.selected)
--                val parent = driver.parentFile
--                if(parent != null) {
--                    for(file in parent.walkTopDown()) {
--                        if(file.absolutePath == parent.absolutePath)
--                            continue
--                        file.copyTo(File(privateDriverPath + file.name), true)
--                    }
--                }
--
--                driverHandle = NativeHelpers.instance.loadDriver(
--                    activity.applicationInfo.nativeLibraryDir!! + "/",
--                    privateDriverPath,
--                    this.libraryName
--                )
--            }
--        }
-+        driverHandle = loadSelectedVulkanDriver(driverViewModel, drivers)
-         val extensions = nativeInterop.VkRequiredExtensions
- 
-         success = KenjinxNative.graphicsInitializeRenderer(
 diff --git a/src/Ryujinx.HLE/PerformanceStatistics.cs b/src/Ryujinx.HLE/PerformanceStatistics.cs
 index 890bce8..aa38782 100644
 --- a/src/Ryujinx.HLE/PerformanceStatistics.cs
