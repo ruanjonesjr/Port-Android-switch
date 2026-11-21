@@ -1639,3 +1639,17 @@ index 0f00144..aa6fcae 100644
          val extensions = nativeInterop.VkRequiredExtensions
  
          success = KenjinxNative.graphicsInitializeRenderer(
+diff --git a/src/Ryujinx.HLE/PerformanceStatistics.cs b/src/Ryujinx.HLE/PerformanceStatistics.cs
+index 890bce8..aa38782 100644
+--- a/src/Ryujinx.HLE/PerformanceStatistics.cs
++++ b/src/Ryujinx.HLE/PerformanceStatistics.cs
+@@ -159,7 +159,8 @@ namespace Ryujinx.HLE
+ 
+         public double GetGameFrameTime()
+         {
+-            return 1000 / _frameRate[FrameTypeGame];
++            double frameRate = GetGameFrameRate();
++            return frameRate > 0 ? 1000.0 / frameRate : 0;
+         }
+     }
+ }
