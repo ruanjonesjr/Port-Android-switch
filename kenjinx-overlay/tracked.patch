@@ -1691,10 +1691,17 @@ index 8cfb6ae..e570aef 100644
  
          [UnmanagedCallersOnly(EntryPoint = "deviceGetInstalledFirmwareVersion")]
 diff --git a/src/LibKenjinx/LibKenjinx.Graphics.cs b/src/LibKenjinx/LibKenjinx.Graphics.cs
-index 657a7d1..856e1a7 100644
+index 657a7d1..ed07b1f 100644
 --- a/src/LibKenjinx/LibKenjinx.Graphics.cs
 +++ b/src/LibKenjinx/LibKenjinx.Graphics.cs
-@@ -10,6 +10,7 @@ using Ryujinx.Graphics.OpenGL;
+@@ -1,5 +1,6 @@
+ using LibKenjinx.Android;
+ using Ryujinx.Common;
++using Ryujinx.Common.Logging;
+ using Ryujinx.Common.Configuration;
+ using Ryujinx.Cpu;
+ using Ryujinx.Graphics.GAL;
+@@ -10,6 +11,7 @@ using Ryujinx.Graphics.OpenGL;
  using Ryujinx.Graphics.Vulkan;
  using Silk.NET.Vulkan;
  using System;
@@ -1702,13 +1709,37 @@ index 657a7d1..856e1a7 100644
  using System.Runtime.InteropServices;
  using System.Threading;
  
-@@ -129,7 +130,16 @@ namespace LibKenjinx
-                         if (device.WaitFifo())
+@@ -24,6 +26,12 @@ namespace LibKenjinx
+         private static NativeGraphicsInterop _nativeGraphicsInterop;
+         private static ManualResetEvent? _gpuDoneEvent;
+         private static bool _enableGraphicsLogging;
++        private static long _fpsDiagWindowStart = Stopwatch.GetTimestamp();
++        private static long _fpsDiagWaitFifoTicks;
++        private static long _fpsDiagProcessTicks;
++        private static long _fpsDiagPresentTicks;
++        private static long _fpsDiagProcessBatches;
++        private static long _fpsDiagPresentedFrames;
+ 
+         public delegate void SwapBuffersCallback();
+         public delegate IntPtr GetProcAddress(string name);
+@@ -126,15 +134,32 @@ namespace LibKenjinx
+                             break;
+                         }
+ 
+-                        if (device.WaitFifo())
++                        long waitStart = Stopwatch.GetTimestamp();
++                        bool hasCommands = device.WaitFifo();
++                        Interlocked.Add(ref _fpsDiagWaitFifoTicks, Stopwatch.GetTimestamp() - waitStart);
++
++                        if (hasCommands)
                          {
                              device.Statistics.RecordFifoStart();
 +                            long workStart = Stopwatch.GetTimestamp();
                              device.ProcessFrame();
 +                            long workTicks = Stopwatch.GetTimestamp() - workStart;
++                            Interlocked.Add(ref _fpsDiagProcessTicks, workTicks);
++                            Interlocked.Increment(ref _fpsDiagProcessBatches);
++
 +                            long workDurationNanos = (long)(
 +                                workTicks * (1_000_000_000.0 / Stopwatch.Frequency));
 +
@@ -1719,6 +1750,66 @@ index 657a7d1..856e1a7 100644
                              device.Statistics.RecordFifoEnd();
                          }
  
+                         while (device.ConsumeFrameAvailable())
+                         {
++                            long presentStart = Stopwatch.GetTimestamp();
+                             device.PresentFrame(() =>
+                             {
+                                 if (device.Gpu.Renderer is ThreadedRenderer threaded && threaded.BaseRenderer is VulkanRenderer vulkanRenderer)
+@@ -143,7 +168,11 @@ namespace LibKenjinx
+                                 }
+                                 _swapBuffersCallback?.Invoke();
+                             });
++                            Interlocked.Add(ref _fpsDiagPresentTicks, Stopwatch.GetTimestamp() - presentStart);
++                            Interlocked.Increment(ref _fpsDiagPresentedFrames);
+                         }
++
++                        ReportFpsDiagnostics();
+                     }
+ 
+                     if (device.Gpu.Renderer is ThreadedRenderer threaded)
+@@ -161,6 +190,41 @@ namespace LibKenjinx
+             }
+         }
+ 
++        private static void ReportFpsDiagnostics()
++        {
++            long now = Stopwatch.GetTimestamp();
++            long previous = Interlocked.Read(ref _fpsDiagWindowStart);
++
++            if (now - previous < Stopwatch.Frequency)
++                return;
++
++            long windowStart = Interlocked.Exchange(ref _fpsDiagWindowStart, now);
++            long elapsed = now - windowStart;
++
++            if (elapsed <= 0)
++                return;
++
++            long waitTicks = Interlocked.Exchange(ref _fpsDiagWaitFifoTicks, 0);
++            long processTicks = Interlocked.Exchange(ref _fpsDiagProcessTicks, 0);
++            long presentTicks = Interlocked.Exchange(ref _fpsDiagPresentTicks, 0);
++            long batches = Interlocked.Exchange(ref _fpsDiagProcessBatches, 0);
++            long frames = Interlocked.Exchange(ref _fpsDiagPresentedFrames, 0);
++
++            double seconds = elapsed / (double)Stopwatch.Frequency;
++            double fps = frames / seconds;
++            double fifoWait = waitTicks * 1000.0 / Stopwatch.Frequency / seconds;
++            double processMs = batches > 0
++                ? processTicks * 1000.0 / Stopwatch.Frequency / batches : 0;
++            double presentMs = frames > 0
++                ? presentTicks * 1000.0 / Stopwatch.Frequency / frames : 0;
++
++            Logger.Info?.Print(
++                LogClass.Gpu,
++                $"FPSDIAG fps={fps:F1} batches_s={batches / seconds:F1} " +
++                $"fifo_wait_ms_s={fifoWait:F1} process_ms_batch={processMs:F2} " +
++                $"present_ms_frame={presentMs:F2}");
++        }
++
+         private static void LoadProgressStateChangedHandler<T>(T state, int current, int total) where T : Enum
+         {
+             void SetInfo(string status, float value)
 diff --git a/src/Ryujinx.HLE/FileSystem/ContentManager.cs b/src/Ryujinx.HLE/FileSystem/ContentManager.cs
 index 66d4325..ae3ddce 100644
 --- a/src/Ryujinx.HLE/FileSystem/ContentManager.cs
